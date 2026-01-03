@@ -1,0 +1,93 @@
+// Prisma数据库模型定义
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// 设备表
+model Device {
+  id             String   @id @default(uuid())
+  name           String   // 设备名称
+  host           String   // IP地址
+  port           Int      @default(22) // 端口
+  connectionType String   @default("SSH") // 连接方式: SSH/HTTPS
+  description    String?  // 描述
+  enabled        Boolean  @default(true) // 是否启用
+  online         Boolean  @default(false) // 在线状态
+  lastConnected  DateTime? // 最后连接时间
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  // 关联规则
+  rules NatRule[]
+
+  @@map("devices")
+}
+
+// NAT规则表
+model NatRule {
+  id           String   @id @default(uuid())
+  deviceId     String   // 所属设备ID
+  ruleName     String   // 规则名称
+  protocol     String   // 协议: TCP/UDP/ALL
+  globalIp     String   // 全局IP
+  globalPort   String   // 全局端口
+  insideIp     String   // 内部IP
+  insidePort   String   // 内部端口
+  enabled      Boolean  @default(true) // 是否启用
+  description  String?  // 描述
+  noReverse    Boolean  @default(false) // 不生成反向Server-Map表项
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  // 关联设备
+  device Device @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+
+  // 添加唯一约束：同一设备下规则名称唯一
+  @@unique([deviceId, ruleName])
+  @@map("nat_rules")
+}
+
+// 日志表
+model Log {
+  id        String   @id @default(uuid())
+  level     String   // 日志级别: INFO/SUCCESS/WARNING/ERROR
+  operation String   // 操作类型
+  message   String   // 日志消息
+  details   String?  // 详细信息(JSON)
+  createdAt DateTime @default(now())
+
+  @@map("logs")
+}
+
+// 配置表
+model Config {
+  id        String   @id @default(uuid())
+  key       String   @unique // 配置键
+  value     String   // 配置值(JSON)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("configs")
+}
+
+// 凭据引用表（实际凭据存储在Windows凭据管理器中）
+model CredentialRef {
+  id           String   @id @default(uuid())
+  deviceId     String   @unique // 设备ID
+  authType     String   // 认证类型: Password/PrivateKey/Certificate/MultiFactor
+  username     String?  // 用户名
+  secretRef    String?  // Windows凭据管理器引用
+  privateKey   String?  // 私钥路径
+  certificate  String?  // 证书路径
+  mfaType      String?  // MFA类型: TOTP/SMS/Email/Hardware
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@map("credential_refs")
+}
