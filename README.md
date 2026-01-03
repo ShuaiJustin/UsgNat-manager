@@ -19,6 +19,18 @@
 
 ---
 
+## 📸 软件截图
+
+<div align="center">
+
+![主控制台](https://raw.githubusercontent.com/chengchnegcheng/UsgNat-manager/main/Demo/dashboard.png)
+
+*主控制台 - 实时监控公网IP和设备状态*
+
+</div>
+
+---
+
 ## 📖 项目简介
 
 USG NAT Manager 是一款基于 Electron + React 开发的现代化桌面应用，旨在解决动态公网IP环境下，频繁手动更新防火墙NAT规则的痛点。通过自动化监控和智能更新机制，大幅提升运维效率。
@@ -177,8 +189,8 @@ USG NAT Manager 是一款基于 Electron + React 开发的现代化桌面应用�
 #### 1. 克隆项目
 
 ```bash
-git clone https://github.com/your-org/usg-nat-manager.git
-cd usg-nat-manager
+git clone https://github.com/chengchnegcheng/UsgNat-manager.git
+cd UsgNat-manager
 ```
 
 #### 2. 安装依赖
@@ -577,8 +589,8 @@ npm run format
 
 ## 📧 联系方式
 
-- **问题反馈**: [GitHub Issues](https://github.com/your-org/usg-nat-manager/issues)
-- **功能建议**: [GitHub Discussions](https://github.com/your-org/usg-nat-manager/discussions)
+- **问题反馈**: [GitHub Issues](https://github.com/chengchnegcheng/UsgNat-manager/issues)
+- **功能建议**: [GitHub Discussions](https://github.com/chengchnegcheng/UsgNat-manager/discussions)
 
 ## 🙏 致谢
 
