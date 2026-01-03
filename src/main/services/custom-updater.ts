@@ -364,19 +364,20 @@ class CustomUpdater {
         }
 
         // 降级到完整安装包下载
-        if (!versionInfo || !versionInfo.downloadUrl) {
+        const fullFile = versionInfo?.files?.full;
+        if (!fullFile || !fullFile.url) {
           throw new Error('无法获取下载地址');
         }
 
         // 构建下载地址
         let downloadUrl: string;
-        if (versionInfo.downloadUrl.startsWith('http://') || versionInfo.downloadUrl.startsWith('https://')) {
+        if (fullFile.url.startsWith('http://') || fullFile.url.startsWith('https://')) {
           // 完整 URL，直接使用
-          downloadUrl = versionInfo.downloadUrl;
+          downloadUrl = fullFile.url;
         } else {
           // 相对路径，拼接服务器地址
           const serverUrl = versionInfo._serverUrl || this.updateServerUrls[0];
-          downloadUrl = `${serverUrl}${versionInfo.downloadUrl}`;
+          downloadUrl = `${serverUrl}${fullFile.url}`;
         }
 
         const tempDir = app.getPath('temp');
