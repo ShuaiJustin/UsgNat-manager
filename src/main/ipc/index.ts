@@ -14,6 +14,28 @@ import { backupService } from '../services/backup-service';
 import { customUpdater } from '../services/custom-updater';
 import { prisma } from '../services/prisma-client';
 
+const assertSupportedConnectionType = (connectionType?: string | null, deviceName?: string) => {
+  if (connectionType && connectionType !== 'SSH') {
+    throw new Error(
+      `Device${deviceName ? ` ${deviceName}` : ''} uses unsupported connection type ${connectionType}. Only SSH is supported.`
+    );
+  }
+};
+
+const assertSupportedAuthType = (authType?: string | null) => {
+  if (authType && authType !== 'Password' && authType !== 'PrivateKey') {
+    throw new Error('Only Password and PrivateKey auth are supported in the current version.');
+  }
+};
+
+const assertSupportedDeviceAccess = (
+  device: { name?: string; connectionType?: string | null },
+  credential: { authType?: string | null }
+) => {
+  assertSupportedConnectionType(device.connectionType, device.name);
+  assertSupportedAuthType(credential.authType);
+};
+
 export function registerIpcHandlers() {
   // 设备管理
   ipcMain.handle('device:getAll', async () => {
@@ -103,6 +125,8 @@ export function registerIpcHandlers() {
         return { success: false, message: '未配置凭据' };
       }
 
+      assertSupportedDeviceAccess(device, credential);
+
       await logger.info('设备测试', `开始测试设备连接: ${device.name}`);
 
       const result = await sshManager.testConnection({
@@ -145,12 +169,21 @@ export function registerIpcHandlers() {
     try {
       await logger.info('设备测试', `测试临时连接: ${config.host}:${config.port}`);
 
+      assertSupportedConnectionType(config.connectionType);
+      assertSupportedAuthType(config.authType);
+
+      let privateKey = config.privateKey;
+      if (!privateKey && config.privateKeyPath) {
+        privateKey = fs.readFileSync(config.privateKeyPath, 'utf-8');
+      }
+
       const result = await sshManager.testConnection({
         host: config.host,
         port: config.port,
         username: config.username || 'admin',
         password: config.password,
-        privateKey: config.privateKey,
+        privateKey,
+        passphrase: config.passphrase,
         timeout: 20000, // Server环境增加到20秒超时
       });
 
@@ -201,6 +234,8 @@ export function registerIpcHandlers() {
       if (!credential) {
         throw new Error('未配置凭据');
       }
+
+      assertSupportedDeviceAccess(device, credential);
 
       // 连接设备
       const connectResult = await sshManager.connect(deviceId, {
@@ -331,6 +366,8 @@ export function registerIpcHandlers() {
       if (!credential) {
         throw new Error('未配置凭据');
       }
+
+      assertSupportedDeviceAccess(device, credential);
 
       // 获取本地规则
       const localRules = await prisma.natRule.findMany({
@@ -505,6 +542,8 @@ export function registerIpcHandlers() {
         if (!credential) {
           throw new Error('未配置凭据');
         }
+
+        assertSupportedDeviceAccess(device, credential);
 
         // 连接设备
         const connectResult = await sshManager.connect(deviceId, {

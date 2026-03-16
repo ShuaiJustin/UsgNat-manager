@@ -28,6 +28,45 @@ import {
   ExclamationCircleOutlined,
 } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
+import dayjs, { type Dayjs } from 'dayjs';
+
+const parseScheduledTime = (value: unknown): Dayjs | null => {
+  if (!value) {
+    return null;
+  }
+
+  if (dayjs.isDayjs(value)) {
+    return value;
+  }
+
+  if (typeof value === 'string') {
+    const trimmedValue = value.trim();
+    const matchedTime = /^([01]?\d|2[0-3]):([0-5]\d)$/.exec(trimmedValue);
+
+    if (matchedTime) {
+      const [, hour, minute] = matchedTime;
+      return dayjs().hour(Number(hour)).minute(Number(minute)).second(0).millisecond(0);
+    }
+
+    const parsedValue = dayjs(trimmedValue);
+    return parsedValue.isValid() ? parsedValue : null;
+  }
+
+  return null;
+};
+
+const formatScheduledTime = (value: unknown): string | undefined => {
+  const parsedValue = parseScheduledTime(value);
+  return parsedValue ? parsedValue.format('HH:mm') : undefined;
+};
+
+const ensureIpcSuccess = (result: any, fallbackMessage: string) => {
+  if (result && typeof result === 'object' && 'success' in result && result.success === false) {
+    throw new Error(result.error || result.message || fallbackMessage);
+  }
+
+  return result;
+};
 
 const Automation: React.FC = () => {
   const { t } = useTranslation();
@@ -83,13 +122,13 @@ const Automation: React.FC = () => {
         okType: 'primary',
         onOk: async () => {
           if (api?.automation?.confirmResponse) {
-            await api.automation.confirmResponse(true);
+            ensureIpcSuccess(await api.automation.confirmResponse(true), '确认自动更新失败');
             message.success('已确认，开始更新...');
           }
         },
         onCancel: async () => {
           if (api?.automation?.confirmResponse) {
-            await api.automation.confirmResponse(false);
+            ensureIpcSuccess(await api.automation.confirmResponse(false), '取消自动更新失败');
             message.info('已取消更新');
           }
         },
@@ -100,7 +139,7 @@ const Automation: React.FC = () => {
 
     return () => {
       if (api?.automation?.removeConfirmRequestListener) {
-        api.automation.removeConfirmRequestListener();
+        api.automation.removeConfirmRequestListener(handleConfirmRequest);
       }
     };
   }, []);
@@ -145,9 +184,10 @@ const Automation: React.FC = () => {
             autoUpdateEnabled: automationConfig.autoUpdateEnabled !== undefined ? automationConfig.autoUpdateEnabled : false,
             triggerType: automationConfig.triggerType,
             delayMinutes: automationConfig.delayMinutes,
-            scheduledTime: automationConfig.scheduledTime,
+            scheduledTime: parseScheduledTime(automationConfig.scheduledTime),
             selectedDevices: automationConfig.selectedDevices,
             backupOptions: automationConfig.backupOptions,
+            backupKeepCount: automationConfig.backupKeepCount,
             securityOptions: automationConfig.securityOptions,
             // 通知设置
             windowsNotifyEnabled: automationConfig.windowsNotifyEnabled,
@@ -215,8 +255,10 @@ const Automation: React.FC = () => {
       }
 
       // 准备完整的自动化配置，包含所有字段和状态
+      const scheduledTime = formatScheduledTime(values.scheduledTime);
       const automationConfig = {
         ...values,
+        scheduledTime,
         // 确保所有开关状态被保存
         emailNotifyEnabled: emailNotifyEnabled,
         wechatNotifyEnabled: wechatNotifyEnabled,
@@ -224,7 +266,7 @@ const Automation: React.FC = () => {
       };
 
       // 保存自动化配置（包含所有表单字段）
-      await api.config.save('automation', automationConfig);
+      ensureIpcSuccess(await api.config.save('automation', automationConfig), '保存自动化配置失败');
 
       // 同时保存邮件配置到独立的 email 配置项
       // 无论开关状态都保存，方便用户下次启用时使用
@@ -251,10 +293,10 @@ const Automation: React.FC = () => {
 
       // 保存邮件配置（必须保存，否则重启后丢失）
       if (api?.email?.configure) {
-        await api.email.configure(emailConfig);
+        ensureIpcSuccess(await api.email.configure(emailConfig), '保存邮件配置失败');
       } else if (api?.config?.save) {
         // 如果 email.configure 不可用，直接保存到配置
-        await api.config.save('email', emailConfig);
+        ensureIpcSuccess(await api.config.save('email', emailConfig), '保存邮件配置失败');
       }
 
       // 获取服务状态
@@ -271,15 +313,7 @@ const Automation: React.FC = () => {
         }
 
         // 完整的自动化服务配置（包含IP监控配置）
-        // 处理 scheduledTime（TimePicker 返回 dayjs 对象，需要格式化为字符串）
-        let scheduledTimeStr: string | undefined = undefined;
-        if (values.scheduledTime) {
-          if (typeof values.scheduledTime === 'string') {
-            scheduledTimeStr = values.scheduledTime;
-          } else if (values.scheduledTime && typeof values.scheduledTime.format === 'function') {
-            scheduledTimeStr = values.scheduledTime.format('HH:mm');
-          }
-        }
+        const scheduledTimeStr = scheduledTime;
 
         const automationServiceConfig = {
           enabled: true,
@@ -302,7 +336,10 @@ const Automation: React.FC = () => {
         if (status?.isMonitoring) {
           // 服务已运行，只更新配置（如果有 updateConfig 接口）
           if (api.automation?.updateConfig) {
-            await api.automation.updateConfig(automationServiceConfig);
+            ensureIpcSuccess(
+              await api.automation.updateConfig(automationServiceConfig),
+              '更新自动化服务配置失败'
+            );
             message.success(t('common.success'));
           } else {
             // 没有 updateConfig 接口，提示用户需要重启服务
@@ -311,18 +348,17 @@ const Automation: React.FC = () => {
         } else {
           // 服务未运行，启动服务
           if (api.automation?.start) {
-            const result = await api.automation.start(automationServiceConfig);
-            if (!result.success) {
-              message.error(t('common.error') + ': ' + result.error);
-            } else {
-              message.success(t('common.success'));
-            }
+            ensureIpcSuccess(
+              await api.automation.start(automationServiceConfig),
+              '启动自动化服务失败'
+            );
+            message.success(t('common.success'));
           }
         }
       } else {
         // 禁用监控，停止服务
         if (status?.isMonitoring && api.automation?.stop) {
-          await api.automation.stop();
+          ensureIpcSuccess(await api.automation.stop(), '停止自动化服务失败');
           message.success(t('common.success'));
         } else {
           message.success(t('common.success'));
@@ -354,6 +390,10 @@ const Automation: React.FC = () => {
           checkSources: ['cip', 'ipip', 'ip138', 'ip.sb'], // IP检测源默认值（与后端一致）
           autoUpdateEnabled: false,
           triggerType: 'immediate',
+          selectedDevices: [],
+          backupOptions: [],
+          backupKeepCount: 10,
+          securityOptions: [],
           windowsNotifyEnabled: true,
           notifyTypes: ['ipChange', 'updateSuccess', 'updateFailed'], // 通知类型默认值
           smtpPort: '465', // 邮件默认端口

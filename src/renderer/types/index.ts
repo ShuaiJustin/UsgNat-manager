@@ -78,9 +78,11 @@ export interface ElectronAPI {
     update: (id: string, device: Partial<Device>) => Promise<Device>;
     delete: (id: string) => Promise<void>;
     testConnection: (id: string) => Promise<ConnectionTestResult>;
+    testDirectConnection: (config: any) => Promise<ConnectionTestResult>;
   };
   rule: {
     getAll: (deviceId: string) => Promise<NatRule[]>;
+    getTotalCount: () => Promise<number>;
     syncFromDevice: (deviceId: string) => Promise<NatRule[]>;
     syncToDevice: (deviceId: string) => Promise<{ success: boolean; syncedCount: number }>;
     batchUpdateIP: (
@@ -88,6 +90,7 @@ export interface ElectronAPI {
       ruleIds: string[],
       newIP: string
     ) => Promise<{ success: boolean; updated: number }>;
+    batchUpdate: (ruleIds: string[], updates: any) => Promise<{ success: boolean; updated: number }>;
     create: (deviceId: string, rule: Partial<NatRule>) => Promise<NatRule>;
     update: (id: string, rule: Partial<NatRule>) => Promise<NatRule>;
     delete: (id: string) => Promise<void>;
@@ -106,16 +109,25 @@ export interface ElectronAPI {
   log: {
     query: (filter: any) => Promise<Log[]>;
     export: (filter: any) => Promise<string>;
+    cleanup: (daysToKeep: number) => Promise<{ success: boolean; count: number }>;
   };
   automation: {
     start: (config: any) => Promise<{ success: boolean; error?: string }>;
     stop: () => Promise<{ success: boolean; error?: string }>;
+    getConfig: () => Promise<any>;
     getStatus: () => Promise<any>;
     manualUpdate: (newIP?: string) => Promise<{ success: boolean; error?: string }>;
+    updateConfig: (config: any) => Promise<{ success: boolean; error?: string }>;
+    confirmResponse: (confirmed: boolean) => Promise<{ success: boolean; error?: string }>;
+    onConfirmRequest: (callback: (data: { newIP: string; deviceCount: number }) => void) => void;
+    removeConfirmRequestListener: (
+      callback: (data: { newIP: string; deviceCount: number }) => void
+    ) => void;
   };
   email: {
     configure: (config: any) => Promise<{ success: boolean }>;
     sendTest: () => Promise<{ success: boolean }>;
+    sendTestWithConfig: (config: any) => Promise<{ success: boolean }>;
     verifyConfig: (config: any) => Promise<{ success: boolean }>;
   };
   config: {
@@ -134,10 +146,23 @@ export interface ElectronAPI {
     cleanup: (keepCount?: number) => Promise<{ success: boolean; deleted: number }>;
     stats: () => Promise<any>;
   };
+  database: {
+    clearAll: () => Promise<{ success: boolean }>;
+  };
   system: {
     showNotification: (title: string, body: string) => Promise<void>;
     getTheme: () => Promise<string>;
     setTheme: (theme: string) => Promise<void>;
+    setAutoStart: (enabled: boolean) => Promise<{ success: boolean; error?: string }>;
+    getAutoStart: () => Promise<boolean>;
+    getDatabaseInfo: () => Promise<{ path: string; size: string }>;
+    selectFile: (options?: any) => Promise<string | null>;
+  };
+  updater: {
+    checkForUpdates: (showNoUpdateMessage?: boolean) => Promise<any>;
+    downloadUpdate: () => Promise<{ success: boolean; message?: string }>;
+    quitAndInstall: () => Promise<{ success: boolean; message?: string }>;
+    getCurrentVersion: () => Promise<string>;
   };
   on: (channel: string, callback: (...args: unknown[]) => void) => void;
   off: (channel: string, callback: (...args: unknown[]) => void) => void;

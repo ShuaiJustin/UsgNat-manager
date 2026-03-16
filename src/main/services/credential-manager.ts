@@ -178,7 +178,7 @@ class CredentialManager {
    * 删除凭据
    */
   async deleteCredential(deviceId: string): Promise<void> {
-    await prisma.credentialRef.delete({
+    await prisma.credentialRef.deleteMany({
       where: { deviceId },
     });
   }

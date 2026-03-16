@@ -1,5 +1,26 @@
 import { contextBridge, ipcRenderer } from 'electron';
 
+const listenerMap = new Map<string, WeakMap<(...args: any[]) => void, (...args: any[]) => void>>();
+
+const addMappedListener = (channel: string, callback: (...args: any[]) => void) => {
+  let channelListeners = listenerMap.get(channel);
+  if (!channelListeners) {
+    channelListeners = new WeakMap();
+    listenerMap.set(channel, channelListeners);
+  }
+
+  const wrappedCallback = (_event: any, ...args: any[]) => callback(...args);
+  channelListeners.set(callback, wrappedCallback);
+  ipcRenderer.on(channel, wrappedCallback);
+};
+
+const removeMappedListener = (channel: string, callback: (...args: any[]) => void) => {
+  const wrappedCallback = listenerMap.get(channel)?.get(callback);
+  if (wrappedCallback) {
+    ipcRenderer.removeListener(channel, wrappedCallback as any);
+  }
+};
+
 // 暴露安全的API给渲染进程
 contextBridge.exposeInMainWorld('electronAPI', {
   // 设备管理
@@ -62,10 +83,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
     updateConfig: (config: any) => ipcRenderer.invoke('automation:updateConfig', config),
     confirmResponse: (confirmed: boolean) => ipcRenderer.invoke('automation:confirm-response', confirmed),
     onConfirmRequest: (callback: (data: { newIP: string; deviceCount: number }) => void) => {
-      ipcRenderer.on('automation:confirm-request', (_event, data) => callback(data));
+      addMappedListener('automation:confirm-request', callback);
     },
-    removeConfirmRequestListener: () => {
-      ipcRenderer.removeAllListeners('automation:confirm-request');
+    removeConfirmRequestListener: (callback: (data: { newIP: string; deviceCount: number }) => void) => {
+      removeMappedListener('automation:confirm-request', callback);
     },
   },
 
@@ -95,6 +116,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
     delete: (filename: string) => ipcRenderer.invoke('backup:delete', filename),
     cleanup: (keepCount?: number) => ipcRenderer.invoke('backup:cleanup', keepCount),
     stats: () => ipcRenderer.invoke('backup:stats'),
+  },
+
+  // 数据库工具
+  database: {
+    clearAll: () => ipcRenderer.invoke('database:clearAll'),
   },
 
   // 系统功能
@@ -128,13 +154,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // 事件监听
   on: (channel: string, callback: (...args: any[]) => void) => {
-    const wrappedCallback = (_event: any, ...args: any[]) => callback(...args);
-    ipcRenderer.on(channel, wrappedCallback);
-    return wrappedCallback; // 返回包装后的回调，用于正确移除
+    addMappedListener(channel, callback);
   },
 
   // 移除监听
   off: (channel: string, callback: (...args: any[]) => void) => {
-    ipcRenderer.removeAllListeners(channel); // 先移除所有，避免重复
+    removeMappedListener(channel, callback);
   },
 });

@@ -115,7 +115,11 @@ const Dashboard: React.FC = () => {
       if (!api?.monitor?.start) {
         throw new Error('monitor API 未就绪');
       }
-      return await api.monitor.start();
+      const result = await api.monitor.start();
+      if (!result?.success) {
+        throw new Error(result?.error || t('common.error'));
+      }
+      return result;
     },
     onSuccess: (result) => {
       startMonitor();
@@ -135,14 +139,18 @@ const Dashboard: React.FC = () => {
       if (!api?.monitor?.stop) {
         throw new Error('monitor API 未就绪');
       }
-      return await api.monitor.stop();
+      const result = await api.monitor.stop();
+      if (!result?.success) {
+        throw new Error(result?.error || t('common.error'));
+      }
+      return result;
     },
     onSuccess: () => {
       stopMonitor();
       message.success(t('dashboard.stopMonitoring'));
     },
-    onError: () => {
-      message.error(t('common.error'));
+    onError: (error: any) => {
+      message.error(error?.message || t('common.error'));
     },
   });
 
@@ -153,13 +161,17 @@ const Dashboard: React.FC = () => {
       if (!api?.automation?.manualUpdate) {
         throw new Error('automation API 未就绪');
       }
-      return await api.automation.manualUpdate();
+      const result = await api.automation.manualUpdate();
+      if (!result?.success) {
+        throw new Error(result?.error || t('common.error'));
+      }
+      return result;
     },
     onSuccess: () => {
       message.success(t('common.success'));
     },
-    onError: () => {
-      message.error(t('common.error'));
+    onError: (error: any) => {
+      message.error(error?.message || t('common.error'));
     },
   });
 

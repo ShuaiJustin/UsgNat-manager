@@ -29,12 +29,9 @@ const UpdateDialog: React.FC = () => {
     if (!api?.on) return;
 
     // 先清理可能存在的旧监听器
-    if (api?.off) {
-      api.off('updater-message', null);
-    }
 
     // 监听更新消息（包括下载进度）
-    const handleUpdaterMessage = (_event: any, payload: any) => {
+    const handleUpdaterMessage = (payload: any) => {
       // 安全检查：确保 payload 存在且有 event 属性
       if (!payload || typeof payload !== 'object' || !payload.event) {
         // 静默忽略无效消息，避免控制台错误
@@ -232,7 +229,22 @@ const UpdateDialog: React.FC = () => {
 
               // 调用下载更新（异步，不等待）
               if (api?.updater?.downloadUpdate) {
-                api.updater.downloadUpdate();
+                void api.updater
+                  .downloadUpdate()
+                  .then((result: any) => {
+                    if (!result?.success) {
+                      message.error({
+                        content: `下载失败: ${result?.message || '未知错误'}`,
+                        duration: 5,
+                      });
+                    }
+                  })
+                  .catch((error: any) => {
+                    message.error({
+                      content: `下载失败: ${error?.message || '未知错误'}`,
+                      duration: 5,
+                    });
+                  });
               }
             },
           });
@@ -309,7 +321,10 @@ const UpdateDialog: React.FC = () => {
               // 退出并安装
               try {
                 if (api?.updater?.quitAndInstall) {
-                  await api.updater.quitAndInstall();
+                  const result = await api.updater.quitAndInstall();
+                  if (!result?.success) {
+                    throw new Error(result?.message || '未知错误');
+                  }
                 }
               } catch (error: any) {
                 message.error({

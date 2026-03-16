@@ -53,6 +53,14 @@ const Settings: React.FC = () => {
   });
   const { setScale, setLanguage } = useAppStore();
 
+  const ensureIpcSuccess = (result: any, fallbackMessage: string) => {
+    if (result && typeof result === 'object' && 'success' in result && result.success === false) {
+      throw new Error(result.error || result.message || fallbackMessage);
+    }
+
+    return result;
+  };
+
   // 加载配置和数据库信息
   React.useEffect(() => {
     const loadConfig = async () => {
@@ -119,21 +127,26 @@ const Settings: React.FC = () => {
 
       // 保存应用配置（必须保存）
       if (api?.config?.save) {
-        await api.config.save('app', {
-          scale: values.scale,
-          language: values.language,
-          logRetentionDays: values.logRetentionDays,
-          useWindowsCredentials: values.useWindowsCredentials,
-          encryptSensitiveData: values.encryptSensitiveData,
-          requirePasswordOnStartup: values.requirePasswordOnStartup,
-          logAllOperations: values.logAllOperations,
-          writeToWindowsEventLog: values.writeToWindowsEventLog,
-        });
+        ensureIpcSuccess(
+          await api.config.save('app', {
+            scale: values.scale,
+            language: values.language,
+            logRetentionDays: values.logRetentionDays,
+            useWindowsCredentials: values.useWindowsCredentials,
+            encryptSensitiveData: values.encryptSensitiveData,
+            requirePasswordOnStartup: values.requirePasswordOnStartup,
+            logAllOperations: values.logAllOperations,
+            writeToWindowsEventLog: values.writeToWindowsEventLog,
+          }),
+          '设置保存失败'
+        );
+      } else {
+        throw new Error('设置保存接口不可用');
       }
 
       // 设置开机自启动
       if (api?.system?.setAutoStart) {
-        await api.system.setAutoStart(values.autoStart);
+        ensureIpcSuccess(await api.system.setAutoStart(values.autoStart), '设置开机自启动失败');
       }
 
       // ✨ 立即应用设置到UI
@@ -143,8 +156,8 @@ const Settings: React.FC = () => {
       message.success(t('settings.settingsSaved'));
       // 保存成功后清除未保存标记
       setHasUnsavedChanges(false);
-    } catch (error) {
-      message.error('设置保存失败');
+    } catch (error: any) {
+      message.error(error?.message || '设置保存失败');
     } finally {
       setLoading(false);
     }
@@ -159,13 +172,13 @@ const Settings: React.FC = () => {
         try {
           const api = (window as any).electronAPI;
           if (api?.monitor?.stop) {
-            await api.monitor.stop();
+            ensureIpcSuccess(await api.monitor.stop(), '暂停服务失败');
             message.success('服务已暂停');
           } else {
             message.info('服务暂停功能演示');
           }
-        } catch {
-          message.error('暂停服务失败');
+        } catch (error: any) {
+          message.error(error?.message || '暂停服务失败');
         }
       },
     });
@@ -179,15 +192,15 @@ const Settings: React.FC = () => {
         try {
           const api = (window as any).electronAPI;
           if (api?.monitor?.stop && api?.monitor?.start) {
-            await api.monitor.stop();
+            ensureIpcSuccess(await api.monitor.stop(), '停止服务失败');
             await new Promise((resolve) => setTimeout(resolve, 1000));
-            await api.monitor.start();
+            ensureIpcSuccess(await api.monitor.start(), '启动服务失败');
             message.success('服务已重启');
           } else {
             message.info('服务重启功能演示');
           }
-        } catch {
-          message.error('重启服务失败');
+        } catch (error: any) {
+          message.error(error?.message || '重启服务失败');
         }
       },
     });
@@ -350,6 +363,9 @@ const Settings: React.FC = () => {
 
         try {
           const api = (window as any).electronAPI;
+          if (!api?.database?.clearAll) {
+            throw new Error('数据库清理接口不可用');
+          }
 
           // 先创建备份
           message.loading({ content: '正在创建备份...', key: 'clearData' });
@@ -360,38 +376,10 @@ const Settings: React.FC = () => {
           // 清空数据
           message.loading({ content: '正在清空数据...', key: 'clearData' });
 
-          // 清空所有表的数据
-          if (api?.database?.clearAll) {
-            await api.database.clearAll();
-          } else {
-            // 如果没有统一的清空接口，逐个清空
-            const devices = await api?.device?.getAll();
-            if (devices && api?.device?.delete) {
-              for (const device of devices) {
-                await api.device.delete(device.id);
-              }
-            }
-
-            // 清空日志
-            if (api?.log?.clear) {
-              await api.log.clear();
-            }
-
-            // 清空配置（保留关键配置）
-            const configKeys = ['automation', 'app', 'email'];
-            if (api?.config?.delete) {
-              for (const key of configKeys) {
-                try {
-                  await api.config.delete(key);
-                } catch {
-                  // 忽略不存在的配置
-                }
-              }
-            }
-          }
+          ensureIpcSuccess(await api.database.clearAll(), '清空数据失败');
 
           message.success({
-            content: '数据已清空，备份已保存',
+            content: '数据已清空，系统配置已保留，备份已保存',
             key: 'clearData',
             duration: 5,
           });
@@ -485,7 +473,7 @@ const Settings: React.FC = () => {
       content: (
         <div>
           <h3>华为USG防火墙NAT管理软件</h3>
-          <p>版本: V1.1.5</p>
+          <p>版本: V1.1.6</p>
           <Divider />
           <h4>MIT License</h4>
           <p style={{ fontSize: 12, color: '#666' }}>
@@ -536,7 +524,7 @@ const Settings: React.FC = () => {
                   message.loading({ content: '正在下载更新...', key: 'download', duration: 0 });
 
                   if (api?.updater?.downloadUpdate) {
-                    await api.updater.downloadUpdate();
+                    ensureIpcSuccess(await api.updater.downloadUpdate(), '下载更新失败');
 
                     message.destroy('download');
                     modal.success({
@@ -547,7 +535,10 @@ const Settings: React.FC = () => {
                       onOk: async () => {
                         try {
                           if (api?.updater?.quitAndInstall) {
-                            await api.updater.quitAndInstall();
+                            ensureIpcSuccess(
+                              await api.updater.quitAndInstall(),
+                              '退出并安装更新失败'
+                            );
                           }
                         } catch (error: any) {
                           message.error({
@@ -865,7 +856,7 @@ const Settings: React.FC = () => {
                     <p>
                       <strong>{t('settings.aboutTitle')}</strong>
                     </p>
-                    <p>{t('settings.version')}: V1.1.5</p>
+                    <p>{t('settings.version')}: V1.1.6</p>
                     <p>{t('settings.electronVersion')}: 28.1.0</p>
                     <p>{t('settings.reactVersion')}: 18.2.0</p>
                     <Divider />

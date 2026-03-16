@@ -120,6 +120,11 @@ const Rules: React.FC = () => {
     }
   }, [devices, selectedDeviceId]);
 
+  React.useEffect(() => {
+    setSelectedRowKeys([]);
+    setShowBatchMenu(false);
+  }, [selectedDeviceId]);
+
   const columns: ColumnsType<NatRule> = [
     {
       title: t('rules.ruleName'),

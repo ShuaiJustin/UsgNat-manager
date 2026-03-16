@@ -586,6 +586,18 @@ class AutomationService extends EventEmitter {
       throw new Error('未配置凭据');
     }
 
+    if (device.connectionType !== 'SSH') {
+      throw new Error(
+        `Device ${device.name} uses unsupported connection type ${device.connectionType}. Only SSH is supported.`
+      );
+    }
+
+    if (credential.authType !== 'Password' && credential.authType !== 'PrivateKey') {
+      throw new Error(
+        `Device ${device.name} uses unsupported auth type ${credential.authType}. Only Password and PrivateKey are supported.`
+      );
+    }
+
     // 获取需要更新的规则
     const rules = await prisma.natRule.findMany({
       where: { deviceId, enabled: true },
@@ -764,9 +776,6 @@ class AutomationService extends EventEmitter {
 
     // 清理待更新的IP
     this.pendingIP = null;
-
-    // 清理事件监听器，防止内存泄漏
-    this.removeAllListeners();
 
     await logger.info('自动化服务', '自动化服务已停止');
     this.emit('stopped');

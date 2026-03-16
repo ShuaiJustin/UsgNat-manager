@@ -194,7 +194,7 @@ cd UsgNat-manager
 ```
 
 #### 2. 安装依赖
-
+7
 ```bash
 npm install
 ```
