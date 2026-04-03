@@ -1,38 +1,45 @@
-import React from 'react';
-import { Row, Col, Card, Statistic, Button, Space, Timeline, Tag, Modal, Select, App } from 'antd';
+import React, { useEffect, useState } from 'react';
+import { App, Button, Card, Col, Modal, Row, Select, Space, Statistic, Tag, Timeline } from 'antd';
 import {
   CloudOutlined,
-  LaptopOutlined,
-  FileTextOutlined,
   ClockCircleOutlined,
-  PlayCircleOutlined,
-  PauseCircleOutlined,
-  SyncOutlined,
-  FileSearchOutlined,
-  SwapOutlined,
-  SaveOutlined,
   ExportOutlined,
+  FileSearchOutlined,
+  FileTextOutlined,
+  LaptopOutlined,
+  PauseCircleOutlined,
+  PlayCircleOutlined,
+  SaveOutlined,
+  SwapOutlined,
+  SyncOutlined,
 } from '@ant-design/icons';
-import { useMonitorStore } from '@/stores/monitor.store';
-import { useQuery, useMutation } from '@tanstack/react-query';
+import { useMutation, useQuery } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import type { Device } from '@/types';
+
+import type { Device, Log } from '@/types';
+import { useMonitorStore } from '@/stores/monitor.store';
+
+type AutomationDashboardConfig = {
+  checkInterval?: number;
+};
+
+const getErrorMessage = (error: unknown, fallback: string): string =>
+  error instanceof Error ? error.message : fallback;
 
 const Dashboard: React.FC = () => {
   const { t } = useTranslation();
   const { message } = App.useApp();
-  const { currentIP, isMonitoring, startMonitor, stopMonitor, setMonitoring, setCurrentIP } =
+  const { currentIP, isMonitoring, startMonitor, stopMonitor, setCurrentIP, setMonitoring } =
     useMonitorStore();
   const navigate = useNavigate();
-  const [syncModalVisible, setSyncModalVisible] = React.useState(false);
-  const [selectedDeviceId, setSelectedDeviceId] = React.useState<string>();
+  const [syncModalVisible, setSyncModalVisible] = useState(false);
+  const [selectedDeviceId, setSelectedDeviceId] = useState<string>();
 
-  // 初始化监控状态和当前IP
-  React.useEffect(() => {
-    const initializeMonitorStatus = async () => {
+  useEffect(() => {
+    void (async () => {
       try {
-        const api = (window as any).electronAPI;
+        const api = window.electronAPI;
         if (api?.monitor?.getStatus) {
           const status = await api.monitor.getStatus();
           setMonitoring(status.isRunning || false);
@@ -41,83 +48,69 @@ const Dashboard: React.FC = () => {
       } catch (error) {
         console.error('获取监控状态失败:', error);
       }
-    };
+    })();
+  }, [setCurrentIP, setMonitoring]);
 
-    initializeMonitorStatus();
-  }, [setMonitoring, setCurrentIP]);
-
-  // 获取设备统计
   const { data: devices } = useQuery<Device[]>({
     queryKey: ['devices'],
     queryFn: async () => {
-      const api = (window as any).electronAPI;
+      const api = window.electronAPI;
       if (!api?.device?.getAll) {
         throw new Error('device API 未就绪');
       }
-      return await api.device.getAll();
+      return api.device.getAll();
     },
-    enabled: typeof (window as any).electronAPI?.device?.getAll === 'function',
+    enabled: typeof window.electronAPI?.device?.getAll === 'function',
     retry: 2,
   });
 
-  const onlineDevices = devices?.filter((d) => d.online).length || 0;
-  const totalDevices = devices?.length || 0;
-
-  // 获取自动化配置
-  const { data: automationConfig } = useQuery({
+  const { data: automationConfig } = useQuery<AutomationDashboardConfig>({
     queryKey: ['automation', 'config'],
     queryFn: async () => {
-      const api = (window as any).electronAPI;
+      const api = window.electronAPI;
       if (!api?.automation?.getConfig) {
         throw new Error('automation API 未就绪');
       }
-      return await api.automation.getConfig();
+      return api.automation.getConfig<AutomationDashboardConfig>();
     },
     retry: 2,
   });
 
-  // 获取规则总数（优化：直接从后端获取统计数据）
-  const { data: totalRules } = useQuery({
+  const { data: totalRules } = useQuery<number>({
     queryKey: ['rules', 'totalCount'],
     queryFn: async () => {
-      const api = (window as any).electronAPI;
+      const api = window.electronAPI;
       if (!api?.rule?.getTotalCount) {
         throw new Error('rule API 未就绪');
       }
-      return await api.rule.getTotalCount();
+      return api.rule.getTotalCount();
     },
-    enabled: typeof (window as any).electronAPI?.rule?.getTotalCount === 'function',
+    enabled: typeof window.electronAPI?.rule?.getTotalCount === 'function',
     retry: 2,
   });
 
-  // 获取最近事件（从日志）
-  const { data: recentEvents } = useQuery({
+  const { data: recentEvents } = useQuery<Log[]>({
     queryKey: ['logs', 'recent'],
     queryFn: async () => {
-      const api = (window as any).electronAPI;
+      const api = window.electronAPI;
       if (!api?.log?.query) {
         return [];
       }
-      const logs = await api.log.query({
-        limit: 10,
-        orderBy: 'desc',
-      });
-      return logs || [];
+      return (await api.log.query({ limit: 10, orderBy: 'desc' })) || [];
     },
-    refetchInterval: 30000, // 每30秒刷新一次
+    refetchInterval: 30000,
     retry: 2,
   });
 
-  // 启动监控
   const startMonitorMutation = useMutation({
     mutationFn: async () => {
-      const api = (window as any).electronAPI;
+      const api = window.electronAPI;
       if (!api?.monitor?.start) {
         throw new Error('monitor API 未就绪');
       }
       const result = await api.monitor.start();
-      if (!result?.success) {
-        throw new Error(result?.error || t('common.error'));
+      if (!result.success) {
+        throw new Error(result.error || t('common.error'));
       }
       return result;
     },
@@ -125,23 +118,20 @@ const Dashboard: React.FC = () => {
       startMonitor();
       message.success(result.message || t('dashboard.startMonitoring'));
     },
-    onError: (error: any) => {
-      const errorMsg = error?.error || error?.message || t('common.error');
-      const details = error?.details;
-      message.error(details ? `${errorMsg}: ${details}` : errorMsg, 5);
+    onError: (error: unknown) => {
+      message.error(getErrorMessage(error, t('common.error')), 5);
     },
   });
 
-  // 停止监控
   const stopMonitorMutation = useMutation({
     mutationFn: async () => {
-      const api = (window as any).electronAPI;
+      const api = window.electronAPI;
       if (!api?.monitor?.stop) {
         throw new Error('monitor API 未就绪');
       }
       const result = await api.monitor.stop();
-      if (!result?.success) {
-        throw new Error(result?.error || t('common.error'));
+      if (!result.success) {
+        throw new Error(result.error || t('common.error'));
       }
       return result;
     },
@@ -149,40 +139,38 @@ const Dashboard: React.FC = () => {
       stopMonitor();
       message.success(t('dashboard.stopMonitoring'));
     },
-    onError: (error: any) => {
-      message.error(error?.message || t('common.error'));
+    onError: (error: unknown) => {
+      message.error(getErrorMessage(error, t('common.error')));
     },
   });
 
-  // 手动更新IP
   const manualUpdateMutation = useMutation({
     mutationFn: async () => {
-      const api = (window as any).electronAPI;
+      const api = window.electronAPI;
       if (!api?.automation?.manualUpdate) {
         throw new Error('automation API 未就绪');
       }
       const result = await api.automation.manualUpdate();
-      if (!result?.success) {
-        throw new Error(result?.error || t('common.error'));
+      if (!result.success) {
+        throw new Error(result.error || t('common.error'));
       }
       return result;
     },
     onSuccess: () => {
       message.success(t('common.success'));
     },
-    onError: (error: any) => {
-      message.error(error?.message || t('common.error'));
+    onError: (error: unknown) => {
+      message.error(getErrorMessage(error, t('common.error')));
     },
   });
 
-  // 同步规则
   const syncRuleMutation = useMutation({
     mutationFn: async (deviceId: string) => {
-      const api = (window as any).electronAPI;
+      const api = window.electronAPI;
       if (!api?.rule?.syncFromDevice) {
         throw new Error('rule API 未就绪');
       }
-      return await api.rule.syncFromDevice(deviceId);
+      return api.rule.syncFromDevice(deviceId);
     },
     onSuccess: (data) => {
       message.success(`${t('common.success')}, ${data.length} ${t('rules.title')}`);
@@ -193,34 +181,31 @@ const Dashboard: React.FC = () => {
     },
   });
 
-  // 备份配置
   const backupMutation = useMutation({
     mutationFn: async () => {
-      const api = (window as any).electronAPI;
+      const api = window.electronAPI;
       if (!api?.backup?.create) {
         throw new Error('backup API 未就绪');
       }
-      return await api.backup.create('手动备份');
+      return api.backup.create('手动备份');
     },
     onSuccess: (data) => {
-      message.success(`${t('common.success')}: ${data.filename}`);
+      message.success(`${t('common.success')}: ${data.filename || ''}`);
     },
     onError: () => {
       message.error(t('common.error'));
     },
   });
 
-  // 导出日志
   const exportLogMutation = useMutation({
     mutationFn: async () => {
-      const api = (window as any).electronAPI;
+      const api = window.electronAPI;
       if (!api?.log?.export) {
         throw new Error('log API 未就绪');
       }
-      return await api.log.export({});
+      return api.log.export({});
     },
     onSuccess: (csv) => {
-      // 创建下载链接
       const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
       const url = URL.createObjectURL(blob);
       const link = document.createElement('a');
@@ -235,9 +220,11 @@ const Dashboard: React.FC = () => {
     },
   });
 
+  const onlineDevices = devices?.filter((device) => device.online).length || 0;
+  const totalDevices = devices?.length || 0;
+
   return (
     <div>
-      {/* 状态卡片 */}
       <Row gutter={[16, 16]} style={{ marginBottom: 24 }}>
         <Col xs={24} sm={12} lg={6}>
           <Card>
@@ -283,7 +270,6 @@ const Dashboard: React.FC = () => {
         </Col>
       </Row>
 
-      {/* 快速操作 */}
       <Card title={t('dashboard.quickActions')} style={{ marginBottom: 24 }}>
         <Space size="middle" wrap>
           <Button
@@ -338,22 +324,16 @@ const Dashboard: React.FC = () => {
         </Space>
       </Card>
 
-      {/* 最近事件 */}
       <Card title={t('dashboard.recentEvents')}>
         <Timeline
           items={
             recentEvents && recentEvents.length > 0
-              ? recentEvents.map((event: any) => {
-                  // 根据日志级别确定颜色和标签
+              ? recentEvents.map((event) => {
                   let color = 'blue';
-                  let tagColor = 'default';
+                  let tagColor: 'default' | 'success' | 'warning' | 'error' = 'default';
                   let tagText = t('common.info');
 
-                  if (event.level === 'INFO') {
-                    color = 'blue';
-                    tagColor = 'default';
-                    tagText = '信息';
-                  } else if (event.level === 'SUCCESS') {
+                  if (event.level === 'SUCCESS') {
                     color = 'green';
                     tagColor = 'success';
                     tagText = '成功';
@@ -365,6 +345,8 @@ const Dashboard: React.FC = () => {
                     color = 'red';
                     tagColor = 'error';
                     tagText = '错误';
+                  } else if (event.level === 'INFO') {
+                    tagText = '信息';
                   }
 
                   return {
@@ -372,19 +354,12 @@ const Dashboard: React.FC = () => {
                     children: (
                       <div>
                         <div style={{ color: '#999', fontSize: 12, marginBottom: 4 }}>
-                          {(() => {
-                            if (!event.createdAt) return '-';
-                            try {
-                              const d = new Date(event.createdAt);
-                              if (isNaN(d.getTime())) return '-';
-                              return d.toLocaleTimeString('zh-CN', {
+                          {event.createdAt
+                            ? new Date(event.createdAt).toLocaleTimeString('zh-CN', {
                                 hour: '2-digit',
                                 minute: '2-digit',
-                              });
-                            } catch {
-                              return '-';
-                            }
-                          })()}
+                              })
+                            : '-'}
                         </div>
                         <div>
                           <Tag color={tagColor}>{tagText}</Tag>
@@ -398,7 +373,6 @@ const Dashboard: React.FC = () => {
                   };
                 })
               : [
-                  // 默认占位数据（当没有日志时显示）
                   {
                     color: 'gray',
                     children: <div style={{ color: '#999' }}>{t('dashboard.recentEvents')}</div>,
@@ -408,7 +382,6 @@ const Dashboard: React.FC = () => {
         />
       </Card>
 
-      {/* 同步规则对话框 */}
       <Modal
         title={t('dashboard.syncRules')}
         open={syncModalVisible}
@@ -429,10 +402,10 @@ const Dashboard: React.FC = () => {
             placeholder={t('devices.deviceName')}
             value={selectedDeviceId}
             onChange={setSelectedDeviceId}
-            options={devices?.map((d) => ({
-              label: `${d.name} (${d.host})`,
-              value: d.id,
-              disabled: !d.online,
+            options={devices?.map((device) => ({
+              label: `${device.name} (${device.host})`,
+              value: device.id,
+              disabled: !device.online,
             }))}
           />
         </div>

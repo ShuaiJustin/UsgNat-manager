@@ -1,41 +1,34 @@
-import React, { useState, useEffect } from 'react';
-import { MinusOutlined, BorderOutlined, CloseOutlined, AppstoreOutlined } from '@ant-design/icons';
+import React, { useEffect, useState } from 'react';
+import { AppstoreOutlined, BorderOutlined, CloseOutlined, MinusOutlined } from '@ant-design/icons';
 
 const TitleBar: React.FC = () => {
   const [isMaximized, setIsMaximized] = useState(false);
 
   useEffect(() => {
     const checkMaximized = async () => {
-      const api = (window as any).electronAPI;
+      const api = window.electronAPI;
       if (api?.window?.isMaximized) {
-        const maximized = await api.window.isMaximized();
-        setIsMaximized(maximized);
+        setIsMaximized(await api.window.isMaximized());
       }
     };
-    checkMaximized();
+
+    void checkMaximized();
   }, []);
 
   const handleMinimize = () => {
-    const api = (window as any).electronAPI;
-    if (api?.window?.minimize) {
-      api.window.minimize();
-    }
+    void window.electronAPI.window?.minimize();
   };
 
   const handleMaximize = async () => {
-    const api = (window as any).electronAPI;
-    if (api?.window?.maximize) {
+    const api = window.electronAPI;
+    if (api?.window?.maximize && api.window.isMaximized) {
       await api.window.maximize();
-      const maximized = await api.window.isMaximized();
-      setIsMaximized(maximized);
+      setIsMaximized(await api.window.isMaximized());
     }
   };
 
   const handleClose = () => {
-    const api = (window as any).electronAPI;
-    if (api?.window?.close) {
-      api.window.close();
-    }
+    void window.electronAPI.window?.close();
   };
 
   return (
@@ -52,7 +45,7 @@ const TitleBar: React.FC = () => {
         </button>
         <button
           className="title-bar-button"
-          onClick={handleMaximize}
+          onClick={() => void handleMaximize()}
           title={isMaximized ? '还原' : '最大化'}
         >
           <BorderOutlined style={{ fontSize: 12 }} />

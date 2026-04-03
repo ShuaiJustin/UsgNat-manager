@@ -16,12 +16,13 @@
     "package:win": "npm run build && electron-builder --win",
     "package:mac": "npm run build && electron-builder --mac",
     "postinstall": "prisma generate",
-    "lint": "eslint src --ext .ts,.tsx --report-unused-disable-directives --max-warnings 0",
+    "lint": "eslint src --ext .ts,.tsx --report-unused-disable-directives",
+    "lint:strict": "eslint src --ext .ts,.tsx --report-unused-disable-directives --max-warnings 0",
     "lint:fix": "eslint src --ext .ts,.tsx --fix",
     "format": "prettier --write \"src/**/*.{ts,tsx,css,json}\"",
     "format:check": "prettier --check \"src/**/*.{ts,tsx,css,json}\"",
     "type-check": "tsc --noEmit",
-    "version:update": "node scripts/update-version.js"
+    "version:update": "node scripts/release/update-version.js"
   },
   "dependencies": {
     "@ant-design/icons": "^5.2.6",
@@ -185,8 +186,8 @@
       "artifactName": "USG-NAT-Manager-${version}-${arch}.${ext}",
       "hardenedRuntime": true,
       "gatekeeperAssess": false,
-      "entitlements": "entitlements.mac.plist",
-      "entitlementsInherit": "entitlements.mac.plist"
+      "entitlements": "resources/build/entitlements.mac.plist",
+      "entitlementsInherit": "resources/build/entitlements.mac.plist"
     },
     "dmg": {
       "contents": [

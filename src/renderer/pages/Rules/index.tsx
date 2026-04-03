@@ -1,25 +1,30 @@
 import React, { useState } from 'react';
-import RuleModal from './RuleModal';
-import { Card, Table, Button, Space, Input, Select, Tag, App, Popconfirm } from 'antd';
+import { App, Button, Card, Input, Popconfirm, Select, Space, Table, Tag } from 'antd';
 import {
+  DeleteOutlined,
+  EditOutlined,
+  ExportOutlined,
   PlusOutlined,
+  ReloadOutlined,
   SearchOutlined,
   SyncOutlined,
-  EditOutlined,
-  DeleteOutlined,
-  ExportOutlined,
-  ReloadOutlined,
 } from '@ant-design/icons';
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { useTranslation } from 'react-i18next';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { ColumnsType } from 'antd/es/table';
-import type { NatRule, Device } from '@/types';
+import { useTranslation } from 'react-i18next';
+
+import type { Device, NatRule } from '@/types';
+import { createTablePagination } from '@/utils/tablePagination';
+import RuleModal from './RuleModal';
+
+const getErrorMessage = (error: unknown, fallback: string): string =>
+  error instanceof Error ? error.message : fallback;
 
 const Rules: React.FC = () => {
   const { t } = useTranslation();
   const { message, modal } = App.useApp();
   const [searchText, setSearchText] = useState('');
-  const [selectedDeviceId, setSelectedDeviceId] = useState<string>('');
+  const [selectedDeviceId, setSelectedDeviceId] = useState('');
   const [selectedRowKeys, setSelectedRowKeys] = useState<React.Key[]>([]);
   const [protocolFilter, setProtocolFilter] = useState<string>('all');
   const [statusFilter, setStatusFilter] = useState<string>('all');
@@ -28,45 +33,44 @@ const Rules: React.FC = () => {
   const [editingRule, setEditingRule] = useState<NatRule | null>(null);
   const queryClient = useQueryClient();
 
-  // 获取设备列表
-  const { data: devices } = useQuery({
+  const { data: devices } = useQuery<Device[]>({
     queryKey: ['devices'],
     queryFn: async () => {
-      const api = (window as any).electronAPI;
+      const api = window.electronAPI;
       if (!api?.device?.getAll) {
         throw new Error('device API 未就绪');
       }
-      return await api.device.getAll();
+      return api.device.getAll();
     },
-    enabled: typeof (window as any).electronAPI?.device?.getAll === 'function',
+    enabled: typeof window.electronAPI?.device?.getAll === 'function',
     retry: 2,
   });
 
-  // 获取规则列表
-  const { data: rules, isLoading } = useQuery({
-    queryKey: ['rules', selectedDeviceId],
+  const activeDeviceId = selectedDeviceId || devices?.[0]?.id || '';
+
+  const { data: rules, isLoading } = useQuery<NatRule[]>({
+    queryKey: ['rules', activeDeviceId],
     queryFn: async () => {
-      const api = (window as any).electronAPI;
+      const api = window.electronAPI;
       if (!api?.rule?.getAll) {
         throw new Error('rule API 未就绪');
       }
-      return await api.rule.getAll(selectedDeviceId);
+      return api.rule.getAll(activeDeviceId);
     },
-    enabled: !!selectedDeviceId && typeof (window as any).electronAPI?.rule?.getAll === 'function',
+    enabled: !!activeDeviceId && typeof window.electronAPI?.rule?.getAll === 'function',
     retry: 2,
   });
 
-  // 从设备获取规则
   const syncFromDeviceMutation = useMutation({
     mutationFn: async (deviceId: string) => {
-      const api = (window as any).electronAPI;
+      const api = window.electronAPI;
       if (!api?.rule?.syncFromDevice) {
         throw new Error('rule API 未就绪');
       }
-      return await api.rule.syncFromDevice(deviceId);
+      return api.rule.syncFromDevice(deviceId);
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['rules'] });
+      void queryClient.invalidateQueries({ queryKey: ['rules'] });
       message.success(t('rules.syncSuccess'));
     },
     onError: () => {
@@ -74,14 +78,13 @@ const Rules: React.FC = () => {
     },
   });
 
-  // 同步到设备
   const syncToDeviceMutation = useMutation({
     mutationFn: async (deviceId: string) => {
-      const api = (window as any).electronAPI;
+      const api = window.electronAPI;
       if (!api?.rule?.syncToDevice) {
         throw new Error('rule API 未就绪');
       }
-      return await api.rule.syncToDevice(deviceId);
+      return api.rule.syncToDevice(deviceId);
     },
     onSuccess: (data) => {
       if (data.syncedCount === 0) {
@@ -90,40 +93,27 @@ const Rules: React.FC = () => {
         message.success(data.message || `${t('rules.syncSuccess')} ${data.syncedCount}`);
       }
     },
-    onError: (error: any) => {
-      message.error(error.message || t('rules.syncFailed'));
+    onError: (error: unknown) => {
+      message.error(getErrorMessage(error, t('rules.syncFailed')));
     },
   });
 
-  // 删除规则
   const deleteMutation = useMutation({
     mutationFn: async (id: string) => {
-      const api = (window as any).electronAPI;
+      const api = window.electronAPI;
       if (!api?.rule?.delete) {
         throw new Error('rule API 未就绪');
       }
-      return await api.rule.delete(id);
+      return api.rule.delete(id);
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['rules'] });
+      void queryClient.invalidateQueries({ queryKey: ['rules'] });
       message.success(t('common.success'));
     },
     onError: () => {
       message.error(t('common.error'));
     },
   });
-
-  // 设置默认选中第一个设备
-  React.useEffect(() => {
-    if (devices && devices.length > 0 && !selectedDeviceId) {
-      setSelectedDeviceId(devices[0].id);
-    }
-  }, [devices, selectedDeviceId]);
-
-  React.useEffect(() => {
-    setSelectedRowKeys([]);
-    setShowBatchMenu(false);
-  }, [selectedDeviceId]);
 
   const columns: ColumnsType<NatRule> = [
     {
@@ -135,7 +125,7 @@ const Rules: React.FC = () => {
       title: t('rules.protocol'),
       dataIndex: 'protocol',
       key: 'protocol',
-      render: (protocol) => <Tag color="blue">{protocol}</Tag>,
+      render: (protocol: NatRule['protocol']) => <Tag color="blue">{protocol}</Tag>,
     },
     {
       title: t('rules.globalIP'),
@@ -161,7 +151,7 @@ const Rules: React.FC = () => {
       title: t('devices.status'),
       dataIndex: 'enabled',
       key: 'enabled',
-      render: (enabled) => (
+      render: (enabled: boolean) => (
         <Tag color={enabled ? 'success' : 'default'}>
           {enabled ? t('rules.enabled') : t('rules.disabled')}
         </Tag>
@@ -199,12 +189,11 @@ const Rules: React.FC = () => {
     },
   ];
 
-  const filteredRules = rules?.filter((rule: NatRule) => {
+  const filteredRules = rules?.filter((rule) => {
     const matchesSearch =
       rule.ruleName.toLowerCase().includes(searchText.toLowerCase()) ||
       rule.globalIp.includes(searchText) ||
       rule.insideIp.includes(searchText);
-
     const matchesProtocol = protocolFilter === 'all' || rule.protocol === protocolFilter;
     const matchesStatus =
       statusFilter === 'all' ||
@@ -213,13 +202,6 @@ const Rules: React.FC = () => {
 
     return matchesSearch && matchesProtocol && matchesStatus;
   });
-
-  const rowSelection = {
-    selectedRowKeys,
-    onChange: (newSelectedRowKeys: React.Key[]) => {
-      setSelectedRowKeys(newSelectedRowKeys);
-    },
-  };
 
   const handleBatchUpdateIP = () => {
     if (selectedRowKeys.length === 0) {
@@ -240,32 +222,33 @@ const Rules: React.FC = () => {
       onOk: async () => {
         const newIp = (document.getElementById('newIpInput') as HTMLInputElement)?.value;
         if (!newIp) {
-          message.error('请输入新的IP地址');
+          message.error('请输入新的 IP 地址');
           return Promise.reject();
         }
 
-        // 验证IP地址格式
         const ipPattern = /^(\d{1,3}\.){3}\d{1,3}$/;
         if (!ipPattern.test(newIp)) {
-          message.error('请输入有效的IP地址');
+          message.error('请输入有效的 IP 地址');
           return Promise.reject();
         }
 
-        // 验证IP段范围
         const parts = newIp.split('.').map(Number);
         if (parts.some((part) => part < 0 || part > 255)) {
-          message.error('IP地址段必须在0-255之间');
+          message.error('IP 地址段必须在 0-255 之间');
           return Promise.reject();
         }
 
         try {
-          const api = (window as any).electronAPI;
-          await api.rule.batchUpdateIP(selectedDeviceId, selectedRowKeys, newIp);
-          queryClient.invalidateQueries({ queryKey: ['rules'] });
+          await window.electronAPI.rule.batchUpdateIP(
+            activeDeviceId,
+            selectedRowKeys.map(String),
+            newIp
+          );
+          await queryClient.invalidateQueries({ queryKey: ['rules'] });
           message.success(`${t('common.success')} ${selectedRowKeys.length}`);
           setSelectedRowKeys([]);
-        } catch (error: any) {
-          message.error(`更新失败: ${error.message || t('common.error')}`);
+        } catch (error) {
+          message.error(`更新失败: ${getErrorMessage(error, t('common.error'))}`);
           return Promise.reject();
         }
       },
@@ -279,14 +262,12 @@ const Rules: React.FC = () => {
     }
 
     try {
-      const api = (window as any).electronAPI;
-      // 使用批量更新API，效率更高
-      await api.rule.batchUpdate(selectedRowKeys, { enabled: true });
-      queryClient.invalidateQueries({ queryKey: ['rules'] });
+      await window.electronAPI.rule.batchUpdate(selectedRowKeys.map(String), { enabled: true });
+      await queryClient.invalidateQueries({ queryKey: ['rules'] });
       message.success(`${t('rules.enabled')} ${selectedRowKeys.length}`);
       setSelectedRowKeys([]);
-    } catch (error: any) {
-      message.error(`启用失败: ${error.message || t('common.error')}`);
+    } catch (error) {
+      message.error(`启用失败: ${getErrorMessage(error, t('common.error'))}`);
     }
   };
 
@@ -297,14 +278,12 @@ const Rules: React.FC = () => {
     }
 
     try {
-      const api = (window as any).electronAPI;
-      // 使用批量更新API，效率更高
-      await api.rule.batchUpdate(selectedRowKeys, { enabled: false });
-      queryClient.invalidateQueries({ queryKey: ['rules'] });
+      await window.electronAPI.rule.batchUpdate(selectedRowKeys.map(String), { enabled: false });
+      await queryClient.invalidateQueries({ queryKey: ['rules'] });
       message.success(`${t('rules.disabled')} ${selectedRowKeys.length}`);
       setSelectedRowKeys([]);
-    } catch (error: any) {
-      message.error(`禁用失败: ${error.message || t('common.error')}`);
+    } catch (error) {
+      message.error(`禁用失败: ${getErrorMessage(error, t('common.error'))}`);
     }
   };
 
@@ -314,7 +293,7 @@ const Rules: React.FC = () => {
       return;
     }
 
-    const selectedRules = rules?.filter((r: NatRule) => selectedRowKeys.includes(r.id));
+    const selectedRules = rules?.filter((rule) => selectedRowKeys.includes(rule.id));
     const csv = [
       [
         t('rules.ruleName'),
@@ -326,16 +305,16 @@ const Rules: React.FC = () => {
         t('devices.status'),
         t('devices.description'),
       ].join(','),
-      ...selectedRules!.map((r: NatRule) =>
+      ...(selectedRules || []).map((rule) =>
         [
-          r.ruleName,
-          r.protocol,
-          r.globalIp,
-          r.globalPort,
-          r.insideIp,
-          r.insidePort,
-          r.enabled ? t('rules.enabled') : t('rules.disabled'),
-          r.description || '',
+          rule.ruleName,
+          rule.protocol,
+          rule.globalIp,
+          rule.globalPort,
+          rule.insideIp,
+          rule.insidePort,
+          rule.enabled ? t('rules.enabled') : t('rules.disabled'),
+          rule.description || '',
         ].join(',')
       ),
     ].join('\n');
@@ -356,6 +335,7 @@ const Rules: React.FC = () => {
       message.warning(t('common.warning'));
       return;
     }
+
     modal.confirm({
       title: t('common.delete'),
       content: `${t('rules.deleteConfirm')} ${selectedRowKeys.length}?`,
@@ -364,28 +344,25 @@ const Rules: React.FC = () => {
       cancelText: t('common.cancel'),
       onOk: async () => {
         try {
-          const api = (window as any).electronAPI;
-          // 逐个删除规则
           for (const id of selectedRowKeys) {
-            await api.rule.delete(id as string);
+            await window.electronAPI.rule.delete(String(id));
           }
-          queryClient.invalidateQueries({ queryKey: ['rules'] });
+          await queryClient.invalidateQueries({ queryKey: ['rules'] });
           message.success(`${t('common.success')} ${selectedRowKeys.length}`);
           setSelectedRowKeys([]);
-        } catch (error: any) {
-          message.error(`删除失败: ${error.message || t('common.error')}`);
+        } catch (error) {
+          message.error(`删除失败: ${getErrorMessage(error, t('common.error'))}`);
         }
       },
     });
   };
 
-  const currentDevice = devices?.find((d: Device) => d.id === selectedDeviceId);
+  const currentDevice = devices?.find((device) => device.id === selectedDeviceId);
 
   return (
     <div>
       <Card>
         <Space direction="vertical" size="middle" style={{ width: '100%' }}>
-          {/* 筛选和搜索栏 */}
           <div
             style={{
               display: 'flex',
@@ -399,10 +376,14 @@ const Rules: React.FC = () => {
               <Select
                 style={{ width: 180 }}
                 placeholder={t('automation.selectDevices')}
-                value={selectedDeviceId}
-                onChange={setSelectedDeviceId}
+                value={activeDeviceId || undefined}
+                onChange={(nextDeviceId) => {
+                  setSelectedDeviceId(nextDeviceId);
+                  setSelectedRowKeys([]);
+                  setShowBatchMenu(false);
+                }}
               >
-                {devices?.map((device: Device) => (
+                {devices?.map((device) => (
                   <Select.Option key={device.id} value={device.id}>
                     {device.name}
                   </Select.Option>
@@ -424,7 +405,7 @@ const Rules: React.FC = () => {
                 prefix={<SearchOutlined />}
                 style={{ width: 200 }}
                 value={searchText}
-                onChange={(e) => setSearchText(e.target.value)}
+                onChange={(event) => setSearchText(event.target.value)}
                 allowClear
               />
             </Space>
@@ -435,27 +416,26 @@ const Rules: React.FC = () => {
                 setEditingRule(null);
                 setIsModalOpen(true);
               }}
-              disabled={!selectedDeviceId}
+              disabled={!activeDeviceId}
             >
               {t('rules.addRule')}
             </Button>
           </div>
 
-          {/* 操作按钮栏 */}
-          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px' }}>
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
             <Button
               size="small"
               icon={<ReloadOutlined />}
-              onClick={() => queryClient.invalidateQueries({ queryKey: ['rules'] })}
+              onClick={() => void queryClient.invalidateQueries({ queryKey: ['rules'] })}
             >
               {t('common.refresh')}
             </Button>
             <Button
               size="small"
               icon={<SyncOutlined />}
-              onClick={() => selectedDeviceId && syncFromDeviceMutation.mutate(selectedDeviceId)}
+              onClick={() => activeDeviceId && syncFromDeviceMutation.mutate(activeDeviceId)}
               loading={syncFromDeviceMutation.isPending}
-              disabled={!selectedDeviceId}
+              disabled={!activeDeviceId}
             >
               {t('rules.getFromDevice')}
             </Button>
@@ -463,7 +443,9 @@ const Rules: React.FC = () => {
               size="small"
               icon={<SyncOutlined />}
               onClick={() => {
-                if (!selectedDeviceId) return;
+                if (!activeDeviceId) {
+                  return;
+                }
                 modal.confirm({
                   title: t('rules.syncToDevice'),
                   content: t('rules.syncToDevice'),
@@ -471,12 +453,12 @@ const Rules: React.FC = () => {
                   okType: 'primary',
                   cancelText: t('common.cancel'),
                   onOk: () => {
-                    syncToDeviceMutation.mutate(selectedDeviceId);
+                    syncToDeviceMutation.mutate(activeDeviceId);
                   },
                 });
               }}
               loading={syncToDeviceMutation.isPending}
-              disabled={!selectedDeviceId}
+              disabled={!activeDeviceId}
             >
               {t('rules.syncToDevice')}
             </Button>
@@ -488,6 +470,7 @@ const Rules: React.FC = () => {
                   message.warning(t('common.warning'));
                   return;
                 }
+
                 const csv = [
                   [
                     t('rules.ruleName'),
@@ -499,16 +482,16 @@ const Rules: React.FC = () => {
                     t('devices.status'),
                     t('devices.description'),
                   ].join(','),
-                  ...rules.map((r: NatRule) =>
+                  ...rules.map((rule) =>
                     [
-                      r.ruleName,
-                      r.protocol,
-                      r.globalIp,
-                      r.globalPort,
-                      r.insideIp,
-                      r.insidePort,
-                      r.enabled ? t('rules.enabled') : t('rules.disabled'),
-                      r.description || '',
+                      rule.ruleName,
+                      rule.protocol,
+                      rule.globalIp,
+                      rule.globalPort,
+                      rule.insideIp,
+                      rule.insidePort,
+                      rule.enabled ? t('rules.enabled') : t('rules.disabled'),
+                      rule.description || '',
                     ].join(',')
                   ),
                 ].join('\n');
@@ -527,7 +510,6 @@ const Rules: React.FC = () => {
             </Button>
           </div>
 
-          {/* 当前设备信息 */}
           {currentDevice && (
             <div
               style={{
@@ -550,18 +532,16 @@ const Rules: React.FC = () => {
             </div>
           )}
 
-          {/* 规则表格 */}
           <Table
-            rowSelection={rowSelection}
+            rowSelection={{
+              selectedRowKeys,
+              onChange: (nextKeys) => setSelectedRowKeys(nextKeys),
+            }}
             columns={columns}
             dataSource={filteredRules}
             loading={isLoading}
             rowKey="id"
-            pagination={{
-              pageSize: 10,
-              showSizeChanger: true,
-              showTotal: (total) => `${t('common.info')}: ${total}`,
-            }}
+            pagination={createTablePagination(10, t('common.info'))}
             footer={() => (
               <Space style={{ width: '100%', justifyContent: 'space-between' }}>
                 <Space>
@@ -576,11 +556,10 @@ const Rules: React.FC = () => {
             )}
           />
 
-          {/* 批量操作菜单 */}
           {showBatchMenu && (
             <div
               style={{
-                padding: '12px',
+                padding: 12,
                 background: '#f5f5f5',
                 borderRadius: 6,
                 border: '1px solid #e0e0e0',
@@ -594,10 +573,16 @@ const Rules: React.FC = () => {
                 >
                   {t('rules.batchUpdate')}
                 </Button>
-                <Button onClick={handleBatchEnable} disabled={selectedRowKeys.length === 0}>
+                <Button
+                  onClick={() => void handleBatchEnable()}
+                  disabled={selectedRowKeys.length === 0}
+                >
                   {t('rules.enabled')}
                 </Button>
-                <Button onClick={handleBatchDisable} disabled={selectedRowKeys.length === 0}>
+                <Button
+                  onClick={() => void handleBatchDisable()}
+                  disabled={selectedRowKeys.length === 0}
+                >
                   {t('rules.disabled')}
                 </Button>
                 <Button onClick={handleBatchExport} disabled={selectedRowKeys.length === 0}>
@@ -615,13 +600,13 @@ const Rules: React.FC = () => {
       <RuleModal
         open={isModalOpen}
         rule={editingRule}
-        deviceId={selectedDeviceId}
+        deviceId={activeDeviceId}
         onClose={() => {
           setIsModalOpen(false);
           setEditingRule(null);
         }}
         onSuccess={() => {
-          queryClient.invalidateQueries({ queryKey: ['rules'] });
+          void queryClient.invalidateQueries({ queryKey: ['rules'] });
         }}
       />
     </div>

@@ -1,10 +1,11 @@
 import React, { useEffect } from 'react';
-import { Layout, Space, Badge, Typography } from 'antd';
-import { CloudOutlined, LaptopOutlined, ClockCircleOutlined } from '@ant-design/icons';
+import { CloudOutlined, ClockCircleOutlined, LaptopOutlined } from '@ant-design/icons';
+import { Badge, Layout, Space, Typography } from 'antd';
 import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { useMonitorStore } from '@/stores/monitor.store';
+
 import type { Device } from '@/types';
+import { useMonitorStore } from '@/stores/monitor.store';
 
 const { Header } = Layout;
 const { Text } = Typography;
@@ -13,33 +14,31 @@ const StatusBar: React.FC = () => {
   const { t } = useTranslation();
   const { currentIP, isMonitoring, setCurrentIP } = useMonitorStore();
 
-  // 获取当前IP
   const { data: ip } = useQuery({
     queryKey: ['currentIP'],
     queryFn: async () => {
-      const api = (window as any).electronAPI;
+      const api = window.electronAPI;
       if (!api?.monitor?.getCurrentIP) {
         throw new Error('monitor API 未就绪');
       }
-      return await api.monitor.getCurrentIP();
+      return api.monitor.getCurrentIP();
     },
-    refetchInterval: 60000, // 每分钟刷新一次
-    enabled: typeof (window as any).electronAPI?.monitor?.getCurrentIP === 'function',
+    refetchInterval: 60000,
+    enabled: typeof window.electronAPI?.monitor?.getCurrentIP === 'function',
     retry: 2,
   });
 
-  // 获取设备列表
   const { data: devices } = useQuery<Device[]>({
     queryKey: ['devices'],
     queryFn: async () => {
-      const api = (window as any).electronAPI;
+      const api = window.electronAPI;
       if (!api?.device?.getAll) {
         throw new Error('device API 未就绪');
       }
-      return await api.device.getAll();
+      return api.device.getAll();
     },
-    refetchInterval: 30000, // 每30秒刷新一次
-    enabled: typeof (window as any).electronAPI?.device?.getAll === 'function',
+    refetchInterval: 30000,
+    enabled: typeof window.electronAPI?.device?.getAll === 'function',
     retry: 2,
   });
 
@@ -49,7 +48,7 @@ const StatusBar: React.FC = () => {
     }
   }, [ip, setCurrentIP]);
 
-  const onlineDevices = devices?.filter((d) => d.online).length || 0;
+  const onlineDevices = devices?.filter((device) => device.online).length || 0;
   const totalDevices = devices?.length || 0;
 
   return (

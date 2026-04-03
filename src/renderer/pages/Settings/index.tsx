@@ -1,114 +1,92 @@
-import React from 'react';
-import {
-  Card,
-  Form,
-  Select,
-  Switch,
-  Button,
-  Space,
-  Divider,
-  Badge,
-  Checkbox,
-  InputNumber,
-  Alert,
-  Row,
-  Col,
-  Statistic,
-  Tabs,
-  Input,
-  App,
-} from 'antd';
-import {
-  CheckCircleOutlined,
-  DatabaseOutlined,
-  SafetyOutlined,
-  SettingOutlined,
-} from '@ant-design/icons';
-import { useAppStore } from '../../stores/app.store';
+import React, { useEffect, useState } from 'react';
+import { App, Alert, Button, Divider, Form, Input, Space, Tabs } from 'antd';
+import type { TabsProps } from 'antd';
+import { CheckCircleOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
+
+import { useAppStore } from '@/stores/app.store';
+import { ensureIpcSuccess } from '@/utils/ipcResult';
+import type {
+  SettingsAppConfig,
+  SettingsDatabaseInfo,
+  SettingsFormValues,
+} from './components/types';
+import SettingsAboutTab from './components/SettingsAboutTab';
+import SettingsDataTab from './components/SettingsDataTab';
+import SettingsGeneralTab from './components/SettingsGeneralTab';
+import SettingsOverviewStats from './components/SettingsOverviewStats';
+import SettingsSecurityTab from './components/SettingsSecurityTab';
+
+const DEFAULT_SETTINGS_FORM_VALUES: SettingsFormValues = {
+  scale: '100',
+  language: 'zh-CN',
+  autoStart: true,
+  logRetentionDays: 30,
+  useWindowsCredentials: true,
+  encryptSensitiveData: true,
+  requirePasswordOnStartup: false,
+  logAllOperations: true,
+  writeToWindowsEventLog: true,
+};
+
+const DEFAULT_DATABASE_INFO: SettingsDatabaseInfo = {
+  path: '加载中...',
+  size: '计算中...',
+};
+
+const getErrorMessage = (error: unknown, fallback: string): string =>
+  error instanceof Error ? error.message : fallback;
 
 const Settings: React.FC = () => {
   const { t } = useTranslation();
   const { message, modal } = App.useApp();
-  const [form] = Form.useForm();
-  const [loading, setLoading] = React.useState(false);
-  const [hasUnsavedChanges, setHasUnsavedChanges] = React.useState(false);
-  const [formValues, setFormValues] = React.useState<any>({
-    scale: '100',
-    language: 'zh-CN',
-    autoStart: true,
-    logRetentionDays: 30,
-    useWindowsCredentials: true,
-    encryptSensitiveData: true,
-    requirePasswordOnStartup: false,
-    logAllOperations: true,
-    writeToWindowsEventLog: true,
-  });
-  const [databaseInfo, setDatabaseInfo] = React.useState<{
-    path: string;
-    size: string;
-  }>({
-    path: '加载中...',
-    size: '计算中...',
-  });
+  const [form] = Form.useForm<SettingsFormValues>();
+  const [loading, setLoading] = useState(false);
+  const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
+  const [formValues, setFormValues] = useState<SettingsFormValues>(DEFAULT_SETTINGS_FORM_VALUES);
+  const [databaseInfo, setDatabaseInfo] = useState<SettingsDatabaseInfo>(DEFAULT_DATABASE_INFO);
   const { setScale, setLanguage } = useAppStore();
 
-  const ensureIpcSuccess = (result: any, fallbackMessage: string) => {
-    if (result && typeof result === 'object' && 'success' in result && result.success === false) {
-      throw new Error(result.error || result.message || fallbackMessage);
-    }
+  useEffect(() => {
+    const loadData = async () => {
+      const api = window.electronAPI;
 
-    return result;
-  };
-
-  // 加载配置和数据库信息
-  React.useEffect(() => {
-    const loadConfig = async () => {
       try {
-        const api = (window as any).electronAPI;
+        const [appConfig, autoStart] = await Promise.all([
+          api?.config?.get ? api.config.get<SettingsAppConfig>('app') : Promise.resolve(null),
+          api?.system?.getAutoStart
+            ? api.system.getAutoStart()
+            : Promise.resolve(DEFAULT_SETTINGS_FORM_VALUES.autoStart),
+        ]);
 
-        // 加载应用配置
-        let appConfig = null;
-        let autoStart = false;
+        const nextValues: SettingsFormValues = {
+          ...DEFAULT_SETTINGS_FORM_VALUES,
+          ...appConfig,
+          autoStart,
+        };
 
-        if (api?.config?.get) {
-          appConfig = await api.config.get('app');
-        }
-
-        if (api?.system?.getAutoStart) {
-          autoStart = await api.system.getAutoStart();
-        }
-
-        form.setFieldsValue({
-          scale: appConfig?.scale || '100',
-          language: appConfig?.language || 'zh-CN',
-          autoStart: autoStart,
-          logRetentionDays: appConfig?.logRetentionDays || 30,
-          useWindowsCredentials: appConfig?.useWindowsCredentials ?? true,
-          encryptSensitiveData: appConfig?.encryptSensitiveData ?? true,
-          requirePasswordOnStartup: appConfig?.requirePasswordOnStartup ?? false,
-          logAllOperations: appConfig?.logAllOperations ?? true,
-          writeToWindowsEventLog: appConfig?.writeToWindowsEventLog ?? true,
-        });
-      } catch (error) {
-        // 配置加载失败，使用默认值
+        form.setFieldsValue(nextValues);
+        setFormValues(nextValues);
+        setHasUnsavedChanges(false);
+      } catch {
+        form.setFieldsValue(DEFAULT_SETTINGS_FORM_VALUES);
+        setFormValues(DEFAULT_SETTINGS_FORM_VALUES);
       }
 
-      // 单独加载数据库信息
       try {
-        const api = (window as any).electronAPI;
-        if (api?.system?.getDatabaseInfo) {
-          const dbInfo = await api.system.getDatabaseInfo();
-          setDatabaseInfo({
-            path: dbInfo?.path || '未知',
-            size: dbInfo?.size || '未知',
-          });
-        } else {
+        if (!api?.system?.getDatabaseInfo) {
           setDatabaseInfo({
             path: '无法获取',
             size: '无法获取',
           });
+          return;
         }
+
+        const info = await api.system.getDatabaseInfo();
+        setDatabaseInfo({
+          path: info.path || '未知',
+          size: info.size || '未知',
+        });
       } catch {
         setDatabaseInfo({
           path: '获取失败',
@@ -116,69 +94,65 @@ const Settings: React.FC = () => {
         });
       }
     };
-    loadConfig();
+
+    void loadData();
   }, [form]);
 
   const handleSave = async () => {
     try {
       setLoading(true);
       const values = await form.validateFields();
-      const api = (window as any).electronAPI;
+      const api = window.electronAPI;
 
-      // 保存应用配置（必须保存）
-      if (api?.config?.save) {
-        ensureIpcSuccess(
-          await api.config.save('app', {
-            scale: values.scale,
-            language: values.language,
-            logRetentionDays: values.logRetentionDays,
-            useWindowsCredentials: values.useWindowsCredentials,
-            encryptSensitiveData: values.encryptSensitiveData,
-            requirePasswordOnStartup: values.requirePasswordOnStartup,
-            logAllOperations: values.logAllOperations,
-            writeToWindowsEventLog: values.writeToWindowsEventLog,
-          }),
-          '设置保存失败'
-        );
-      } else {
+      if (!api?.config?.save) {
         throw new Error('设置保存接口不可用');
       }
 
-      // 设置开机自启动
+      const appConfig: SettingsAppConfig = {
+        scale: values.scale,
+        language: values.language,
+        logRetentionDays: values.logRetentionDays,
+        useWindowsCredentials: values.useWindowsCredentials,
+        encryptSensitiveData: values.encryptSensitiveData,
+        requirePasswordOnStartup: values.requirePasswordOnStartup,
+        logAllOperations: values.logAllOperations,
+        writeToWindowsEventLog: values.writeToWindowsEventLog,
+      };
+
+      ensureIpcSuccess(await api.config.save('app', appConfig), '设置保存失败');
+
       if (api?.system?.setAutoStart) {
         ensureIpcSuccess(await api.system.setAutoStart(values.autoStart), '设置开机自启动失败');
       }
 
-      // ✨ 立即应用设置到UI
       setScale(values.scale);
       setLanguage(values.language);
-
-      message.success(t('settings.settingsSaved'));
-      // 保存成功后清除未保存标记
+      setFormValues(values);
       setHasUnsavedChanges(false);
-    } catch (error: any) {
-      message.error(error?.message || '设置保存失败');
+      message.success(t('settings.settingsSaved'));
+    } catch (error) {
+      message.error(getErrorMessage(error, '设置保存失败'));
     } finally {
       setLoading(false);
     }
   };
 
-  // 服务管理
   const handlePauseService = () => {
     modal.confirm({
       title: '暂停服务',
-      content: '确定要暂停监控服务吗？暂停期间将不会检测IP变化。',
+      content: '确定要暂停监控服务吗？暂停期间将不会检测 IP 变化。',
       onOk: async () => {
         try {
-          const api = (window as any).electronAPI;
+          const api = window.electronAPI;
           if (api?.monitor?.stop) {
             ensureIpcSuccess(await api.monitor.stop(), '暂停服务失败');
             message.success('服务已暂停');
-          } else {
-            message.info('服务暂停功能演示');
+            return;
           }
-        } catch (error: any) {
-          message.error(error?.message || '暂停服务失败');
+
+          message.info('服务暂停功能演示');
+        } catch (error) {
+          message.error(getErrorMessage(error, '暂停服务失败'));
         }
       },
     });
@@ -190,33 +164,34 @@ const Settings: React.FC = () => {
       content: '确定要重启监控服务吗？',
       onOk: async () => {
         try {
-          const api = (window as any).electronAPI;
+          const api = window.electronAPI;
           if (api?.monitor?.stop && api?.monitor?.start) {
             ensureIpcSuccess(await api.monitor.stop(), '停止服务失败');
             await new Promise((resolve) => setTimeout(resolve, 1000));
             ensureIpcSuccess(await api.monitor.start(), '启动服务失败');
             message.success('服务已重启');
-          } else {
-            message.info('服务重启功能演示');
+            return;
           }
-        } catch (error: any) {
-          message.error(error?.message || '重启服务失败');
+
+          message.info('服务重启功能演示');
+        } catch (error) {
+          message.error(getErrorMessage(error, '重启服务失败'));
         }
       },
     });
   };
 
   const handleInstallService = () => {
-    message.info('Windows服务安装功能需要管理员权限，当前版本暂不支持。建议使用开机自启动功能。');
+    message.info('Windows 服务安装需要管理员权限，当前版本暂不支持。建议使用开机自启动功能。');
   };
 
   const handleUninstallService = () => {
     modal.confirm({
       title: '卸载服务',
-      content: '确定要卸载Windows服务吗？这将移除服务但保留所有数据。',
+      content: '确定要卸载 Windows 服务吗？这将移除服务但保留所有数据。',
       okType: 'danger',
       onOk: () => {
-        message.info('Windows服务卸载功能需要管理员权限，当前版本暂不支持。');
+        message.info('Windows 服务卸载需要管理员权限，当前版本暂不支持。');
       },
     });
   };
@@ -226,76 +201,76 @@ const Settings: React.FC = () => {
     message.info('已跳转到日志页面');
   };
 
-  // 安全设置
   const handleManagePassword = () => {
     modal.info({
       title: '主密码管理',
-      content: '主密码功能用于保护所有存储的凭据。当前版本使用Windows凭据管理器，暂不需要主密码。',
+      content:
+        '主密码功能用于保护所有存储的凭据。当前版本使用 Windows 凭据管理器，暂时不需要额外主密码。',
     });
   };
 
   const handleExportAuditLog = async () => {
     try {
-      const api = (window as any).electronAPI;
-      if (api?.log?.export) {
-        message.loading({ content: '正在导出审计日志...', key: 'exportLog' });
-        // 导出所有日志，前端不需要category参数
-        const csv = await api.log.export({});
-        const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
-        const url = URL.createObjectURL(blob);
-        const link = document.createElement('a');
-        link.href = url;
-        link.download = `audit_log_${new Date().toISOString().split('T')[0]}.csv`;
-        link.click();
-        URL.revokeObjectURL(url);
-        message.success({ content: '审计日志导出成功', key: 'exportLog' });
-      } else {
+      const api = window.electronAPI;
+      if (!api?.log?.export) {
         message.info('审计日志导出功能演示');
+        return;
       }
-    } catch (error: any) {
-      message.error(`导出审计日志失败: ${error.message}`);
+
+      message.loading({ content: '正在导出审计日志...', key: 'exportLog' });
+      const csv = await api.log.export({});
+      const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `audit_log_${new Date().toISOString().split('T')[0]}.csv`;
+      link.click();
+      URL.revokeObjectURL(url);
+      message.success({ content: '审计日志导出成功', key: 'exportLog' });
+    } catch (error) {
+      message.error(`导出审计日志失败: ${getErrorMessage(error, '未知错误')}`);
     }
   };
 
   const handleClearCredentials = () => {
     modal.confirm({
       title: '清除所有凭据',
-      content: '此操作将删除所有保存的SSH凭据，操作不可恢复！',
+      content: '此操作将删除所有保存的 SSH 凭据，且不可恢复。',
       okType: 'danger',
       onOk: async () => {
         try {
-          const api = (window as any).electronAPI;
-          if (api?.device?.getAll) {
-            const devices = await api.device.getAll();
-            for (const device of devices) {
-              if (api?.credential?.delete) {
-                await api.credential.delete(device.id);
-              }
-            }
-            message.success('所有凭据已清除');
-          } else {
+          const api = window.electronAPI;
+          if (!api?.device?.getAll || !api?.credential?.delete) {
             message.info('清除凭据功能演示');
+            return;
           }
-        } catch {
-          message.error('清除凭据失败');
+
+          const devices = await api.device.getAll();
+          await Promise.all(devices.map((device) => api.credential.delete(device.id)));
+          message.success('所有凭据已清除');
+        } catch (error) {
+          message.error(getErrorMessage(error, '清除凭据失败'));
         }
       },
     });
   };
 
-  // 数据管理
   const handleBackupData = async () => {
     try {
-      const api = (window as any).electronAPI;
-      if (api?.backup?.create) {
-        message.loading({ content: '正在备份数据...', key: 'backup' });
-        const backup = await api.backup.create('手动备份');
-        message.success({ content: `数据备份成功: ${backup.filename}`, key: 'backup' });
-      } else {
+      const api = window.electronAPI;
+      if (!api?.backup?.create) {
         message.info('数据备份功能演示');
+        return;
       }
-    } catch {
-      message.error('数据备份失败');
+
+      message.loading({ content: '正在备份数据...', key: 'backup' });
+      const backup = await api.backup.create('手动备份');
+      message.success({
+        content: `数据备份成功: ${backup.filename || 'backup.json'}`,
+        key: 'backup',
+      });
+    } catch (error) {
+      message.error(getErrorMessage(error, '数据备份失败'));
     }
   };
 
@@ -304,7 +279,6 @@ const Settings: React.FC = () => {
       title: '恢复数据',
       content: '请从备份列表中选择要恢复的备份文件。建议先创建当前数据的备份。',
       onOk: () => {
-        // 可以跳转到备份页面或打开文件选择器
         message.info('数据恢复功能演示');
       },
     });
@@ -314,20 +288,20 @@ const Settings: React.FC = () => {
     let confirmText = '';
 
     modal.confirm({
-      title: '⚠️ 危险操作：清空所有数据',
+      title: '危险操作：清空所有数据',
       width: 520,
       content: (
         <div>
           <p style={{ color: 'red', fontWeight: 'bold', fontSize: 16 }}>
-            警告：此操作将永久删除所有数据！
+            警告：此操作将永久删除所有业务数据。
           </p>
           <div style={{ background: '#fff2e8', padding: 12, borderRadius: 4, marginBottom: 16 }}>
             <p style={{ margin: 0, fontWeight: 'bold' }}>将被删除的数据：</p>
             <ul style={{ marginBottom: 0 }}>
               <li>所有设备信息</li>
-              <li>所有NAT规则</li>
+              <li>所有 NAT 规则</li>
               <li>所有日志记录</li>
-              <li>所有配置信息</li>
+              <li>所有保存的凭据</li>
             </ul>
           </div>
           <p style={{ fontWeight: 'bold', marginBottom: 8 }}>
@@ -335,11 +309,11 @@ const Settings: React.FC = () => {
           </p>
           <Input
             placeholder="请输入：确认删除"
-            onChange={(e: React.ChangeEvent<HTMLInputElement>) => {
-              confirmText = e.target.value;
+            onChange={(event: React.ChangeEvent<HTMLInputElement>) => {
+              confirmText = event.target.value;
             }}
-            onPressEnter={(e: React.KeyboardEvent<HTMLInputElement>) => {
-              if ((e.target as HTMLInputElement).value === '确认删除') {
+            onPressEnter={(event: React.KeyboardEvent<HTMLInputElement>) => {
+              if ((event.target as HTMLInputElement).value === '确认删除') {
                 document
                   .querySelector<HTMLButtonElement>('.ant-modal-confirm-btns .ant-btn-primary')
                   ?.click();
@@ -347,7 +321,7 @@ const Settings: React.FC = () => {
             }}
           />
           <p style={{ color: '#999', fontSize: 12, marginTop: 8, marginBottom: 0 }}>
-            系统将自动创建备份后再执行清空操作
+            系统将自动创建备份后再执行清空操作。
           </p>
         </div>
       ),
@@ -358,39 +332,35 @@ const Settings: React.FC = () => {
       onOk: async () => {
         if (confirmText !== '确认删除') {
           message.error('请输入正确的确认文字');
-          return Promise.reject();
+          return Promise.reject(new Error('invalid-confirmation-text'));
         }
 
         try {
-          const api = (window as any).electronAPI;
+          const api = window.electronAPI;
           if (!api?.database?.clearAll) {
             throw new Error('数据库清理接口不可用');
           }
 
-          // 先创建备份
           message.loading({ content: '正在创建备份...', key: 'clearData' });
           if (api?.backup?.create) {
             await api.backup.create('清空数据前自动备份');
           }
 
-          // 清空数据
           message.loading({ content: '正在清空数据...', key: 'clearData' });
-
           ensureIpcSuccess(await api.database.clearAll(), '清空数据失败');
 
           message.success({
-            content: '数据已清空，系统配置已保留，备份已保存',
+            content: '数据已清空，系统配置已保留，备份已创建。',
             key: 'clearData',
             duration: 5,
           });
 
-          // 刷新页面
           setTimeout(() => {
             window.location.reload();
           }, 1500);
-        } catch (error: any) {
+        } catch (error) {
           message.error({
-            content: '清空数据失败: ' + (error.message || '未知错误'),
+            content: `清空数据失败: ${getErrorMessage(error, '未知错误')}`,
             key: 'clearData',
           });
           return Promise.reject(error);
@@ -401,33 +371,40 @@ const Settings: React.FC = () => {
 
   const handleExportConfig = async () => {
     try {
-      const api = (window as any).electronAPI;
-      if (api?.config?.export) {
-        message.loading({ content: '正在导出配置...', key: 'exportConfig' });
-        const result = await api.config.export();
-        if (result.success) {
-          message.success({ content: `配置导出成功: ${result.path}`, key: 'exportConfig' });
-        } else {
-          message.error({ content: `导出失败: ${result.error}`, key: 'exportConfig' });
-        }
-      } else {
+      const api = window.electronAPI;
+      if (!api?.config?.export) {
         message.info('配置导出功能演示');
+        return;
       }
-    } catch (error: any) {
-      message.error(`导出配置失败: ${error.message}`);
+
+      message.loading({ content: '正在导出配置...', key: 'exportConfig' });
+      const result = await api.config.export();
+      if (result.success) {
+        message.success({
+          content: `配置导出成功: ${result.path}`,
+          key: 'exportConfig',
+        });
+        return;
+      }
+
+      message.error({
+        content: `导出失败: ${result.error || '未知错误'}`,
+        key: 'exportConfig',
+      });
+    } catch (error) {
+      message.error(`导出配置失败: ${getErrorMessage(error, '未知错误')}`);
     }
   };
 
-  const handleImportConfig = async () => {
+  const handleImportConfig = () => {
     modal.confirm({
       title: '导入配置',
-      content: '请选择之前导出的配置文件（.json格式）。导入将覆盖当前配置，是否继续？',
+      content: '请选择之前导出的配置文件（.json 格式）。导入将覆盖当前配置，是否继续？',
       okText: '选择文件',
       cancelText: '取消',
       onOk: async () => {
         try {
-          const api = (window as any).electronAPI;
-
+          const api = window.electronAPI;
           if (!api?.system?.selectFile) {
             message.error('文件选择功能不可用');
             return;
@@ -435,11 +412,11 @@ const Settings: React.FC = () => {
 
           const filePath = await api.system.selectFile({
             title: '选择配置文件',
-            filters: [{ name: 'JSON文件', extensions: ['json'] }],
+            filters: [{ name: 'JSON 文件', extensions: ['json'] }],
           });
 
           if (!filePath) {
-            return; // 用户取消选择
+            return;
           }
 
           if (!api?.config?.import) {
@@ -451,28 +428,34 @@ const Settings: React.FC = () => {
           const result = await api.config.import(filePath);
 
           if (result.success) {
-            message.success({ content: '配置导入成功，即将刷新页面', key: 'importConfig' });
+            message.success({
+              content: '配置导入成功，即将刷新页面。',
+              key: 'importConfig',
+            });
             setTimeout(() => {
               window.location.reload();
             }, 1500);
-          } else {
-            message.error({ content: `导入失败: ${result.error}`, key: 'importConfig' });
+            return;
           }
-        } catch (error: any) {
-          message.error(`导入配置失败: ${error.message}`);
+
+          message.error({
+            content: `导入失败: ${result.error || '未知错误'}`,
+            key: 'importConfig',
+          });
+        } catch (error) {
+          message.error(`导入配置失败: ${getErrorMessage(error, '未知错误')}`);
         }
       },
     });
   };
 
-  // 关于功能
   const handleViewLicense = () => {
     modal.info({
-      title: '软件许可证',
+      title: '软件许可',
       width: 600,
       content: (
         <div>
-          <h3>华为USG防火墙NAT管理软件</h3>
+          <h3>华为 USG 防火墙 NAT 管理软件</h3>
           <p>版本: V1.1.6</p>
           <Divider />
           <h4>MIT License</h4>
@@ -483,7 +466,7 @@ const Settings: React.FC = () => {
             Permission is hereby granted, free of charge, to any person obtaining a copy of this
             software and associated documentation files (the &quot;Software&quot;), to deal in the
             Software without restriction, including without limitation the rights to use, copy,
-            modify, merge, publish, distribute, sublicense, and/or sell copies of the Software...
+            modify, merge, publish, distribute, sublicense, and/or sell copies of the Software.
           </p>
         </div>
       ),
@@ -492,96 +475,96 @@ const Settings: React.FC = () => {
 
   const handleCheckUpdate = async () => {
     try {
+      const api = window.electronAPI;
       message.loading({ content: '正在检查更新...', key: 'update', duration: 0 });
 
-      const api = (window as any).electronAPI;
-      if (api?.updater?.checkForUpdates) {
-        const result = await api.updater.checkForUpdates(true);
+      if (!api?.updater?.checkForUpdates) {
+        setTimeout(() => {
+          message.success({
+            content: '当前已是最新版本 V1.1.6',
+            key: 'update',
+          });
+        }, 1500);
+        return;
+      }
 
-        if (result.success) {
-          message.destroy('update');
+      const result = await api.updater.checkForUpdates(true);
 
-          // 如果有新版本，弹出确认框
-          if (result.hasUpdate) {
-            modal.confirm({
-              title: '发现新版本',
-              icon: <CheckCircleOutlined style={{ color: '#52c41a' }} />,
-              content: (
-                <div>
-                  <p>
-                    <strong>当前版本：</strong> V{result.currentVersion || '1.0.6'}
-                  </p>
-                  <p>
-                    <strong>最新版本：</strong> V{result.latestVersion}
-                  </p>
-                  <p style={{ marginTop: 16 }}>是否立即下载并安装新版本？</p>
-                </div>
-              ),
-              okText: '立即下载',
-              cancelText: '稍后提醒',
+      if (!result.success) {
+        message.error({
+          content: result.message || '检查更新失败',
+          key: 'update',
+        });
+        return;
+      }
+
+      message.destroy('update');
+
+      if (!result.hasUpdate) {
+        message.success({
+          content: result.message || '当前已是最新版本',
+          key: 'update',
+        });
+        return;
+      }
+
+      modal.confirm({
+        title: '发现新版本',
+        icon: <CheckCircleOutlined style={{ color: '#52c41a' }} />,
+        content: (
+          <div>
+            <p>
+              <strong>当前版本：</strong> V{result.currentVersion || '1.1.6'}
+            </p>
+            <p>
+              <strong>最新版本：</strong> V{result.latestVersion || '-'}
+            </p>
+            <p style={{ marginTop: 16 }}>是否立即下载并安装新版本？</p>
+          </div>
+        ),
+        okText: '立即下载',
+        cancelText: '稍后提醒',
+        onOk: async () => {
+          try {
+            if (!api?.updater?.downloadUpdate) {
+              throw new Error('下载更新接口不可用');
+            }
+
+            message.loading({ content: '正在下载更新...', key: 'download', duration: 0 });
+            ensureIpcSuccess(await api.updater.downloadUpdate(), '下载更新失败');
+            message.destroy('download');
+
+            modal.success({
+              title: '下载完成',
+              content: '更新已下载完成，应用将在退出时自动安装。是否立即重启安装？',
+              okText: '立即重启',
+              cancelText: '稍后重启',
               onOk: async () => {
                 try {
-                  message.loading({ content: '正在下载更新...', key: 'download', duration: 0 });
-
-                  if (api?.updater?.downloadUpdate) {
-                    ensureIpcSuccess(await api.updater.downloadUpdate(), '下载更新失败');
-
-                    message.destroy('download');
-                    modal.success({
-                      title: '下载完成',
-                      content: '更新已下载完成，应用将在退出时自动安装。是否立即重启安装？',
-                      okText: '立即重启',
-                      cancelText: '稍后重启',
-                      onOk: async () => {
-                        try {
-                          if (api?.updater?.quitAndInstall) {
-                            ensureIpcSuccess(
-                              await api.updater.quitAndInstall(),
-                              '退出并安装更新失败'
-                            );
-                          }
-                        } catch (error: any) {
-                          message.error({
-                            content: `安装失败: ${error.message || '未知错误'}`,
-                            duration: 5,
-                          });
-                        }
-                      },
-                    });
+                  if (!api?.updater?.quitAndInstall) {
+                    throw new Error('安装更新接口不可用');
                   }
-                } catch (error: any) {
+
+                  ensureIpcSuccess(await api.updater.quitAndInstall(), '退出并安装更新失败');
+                } catch (error) {
                   message.error({
-                    content: `下载失败: ${error.message}`,
-                    key: 'download',
+                    content: `安装失败: ${getErrorMessage(error, '未知错误')}`,
+                    duration: 5,
                   });
                 }
               },
             });
-          } else {
-            // 没有新版本
-            message.success({
-              content: result.message || '当前已是最新版本',
-              key: 'update',
+          } catch (error) {
+            message.error({
+              content: `下载失败: ${getErrorMessage(error, '未知错误')}`,
+              key: 'download',
             });
           }
-        } else {
-          message.error({
-            content: result.message || '检查更新失败',
-            key: 'update',
-          });
-        }
-      } else {
-        // 演示模式
-        setTimeout(() => {
-          message.success({
-            content: '当前已是最新版本 V1.0.6',
-            key: 'update',
-          });
-        }, 1500);
-      }
-    } catch (error: any) {
+        },
+      });
+    } catch (error) {
       message.error({
-        content: `检查更新失败: ${error.message}`,
+        content: `检查更新失败: ${getErrorMessage(error, '未知错误')}`,
         key: 'update',
       });
     }
@@ -596,89 +579,87 @@ const Settings: React.FC = () => {
             <strong>技术支持渠道：</strong>
           </p>
           <ul>
-            <li>邮箱: </li>
-            <li>GitHub: </li>
-            <li>文档: </li>
+            <li>邮箱：support@example.com</li>
+            <li>GitHub：项目仓库 Issues</li>
+            <li>文档：项目 docs 目录</li>
           </ul>
-          <p style={{ marginTop: 16 }}></p>
         </div>
       ),
     });
   };
 
+  const tabItems: TabsProps['items'] = [
+    {
+      key: '1',
+      label: t('settings.general'),
+      children: (
+        <SettingsGeneralTab
+          t={t}
+          onInstallService={handleInstallService}
+          onPauseService={handlePauseService}
+          onRestartService={handleRestartService}
+          onUninstallService={handleUninstallService}
+          onViewServiceLog={handleViewServiceLog}
+        />
+      ),
+    },
+    {
+      key: '2',
+      label: t('settings.security'),
+      children: (
+        <SettingsSecurityTab
+          t={t}
+          onClearCredentials={handleClearCredentials}
+          onExportAuditLog={handleExportAuditLog}
+          onManagePassword={handleManagePassword}
+        />
+      ),
+    },
+    {
+      key: '3',
+      label: t('settings.data'),
+      children: (
+        <SettingsDataTab
+          databaseInfo={databaseInfo}
+          t={t}
+          onBackupData={handleBackupData}
+          onClearData={handleClearData}
+          onExportConfig={handleExportConfig}
+          onImportConfig={handleImportConfig}
+          onRestoreData={handleRestoreData}
+        />
+      ),
+    },
+    {
+      key: '4',
+      label: t('settings.about'),
+      children: (
+        <SettingsAboutTab
+          t={t}
+          onCheckUpdate={handleCheckUpdate}
+          onContactSupport={handleContactSupport}
+          onViewLicense={handleViewLicense}
+        />
+      ),
+    },
+  ];
+
   return (
     <div>
-      <Form
+      <Form<SettingsFormValues>
         form={form}
         layout="vertical"
+        initialValues={DEFAULT_SETTINGS_FORM_VALUES}
         onValuesChange={(_changedValues, allValues) => {
           setHasUnsavedChanges(true);
           setFormValues(allValues);
         }}
-        initialValues={{
-          theme: 'auto',
-          scale: '100',
-          language: 'zh-CN',
-          autoStart: true,
-          logRetentionDays: 30,
-          useWindowsCredentials: true,
-          encryptSensitiveData: true,
-          requirePasswordOnStartup: false,
-          logAllOperations: true,
-          writeToWindowsEventLog: true,
-        }}
         onFieldsChange={() => {
-          // 同步更新 formValues
-          setFormValues(form.getFieldsValue());
+          setFormValues(form.getFieldsValue(true));
         }}
       >
-        {/* 区域1: 顶部状态卡片 */}
-        <Row gutter={[16, 16]} style={{ marginBottom: 24 }}>
-          <Col xs={24} sm={12} lg={6}>
-            <Card>
-              <Statistic
-                title={t('settings.serviceStatus')}
-                value={t('settings.running')}
-                prefix={<CheckCircleOutlined />}
-                valueStyle={{ fontSize: 16, color: '#52c41a' }}
-              />
-            </Card>
-          </Col>
-          <Col xs={24} sm={12} lg={6}>
-            <Card>
-              <Statistic
-                title={t('settings.interfaceScale')}
-                value={formValues.scale || '100'}
-                suffix="%"
-                prefix={<SettingOutlined />}
-                valueStyle={{ fontSize: 16 }}
-              />
-            </Card>
-          </Col>
-          <Col xs={24} sm={12} lg={6}>
-            <Card>
-              <Statistic
-                title={t('settings.databaseSize')}
-                value={databaseInfo.size}
-                prefix={<DatabaseOutlined />}
-                valueStyle={{ fontSize: 16 }}
-              />
-            </Card>
-          </Col>
-          <Col xs={24} sm={12} lg={6}>
-            <Card>
-              <Statistic
-                title={t('settings.logRetention')}
-                value={formValues.logRetentionDays || 30}
-                suffix={t('settings.days')}
-                prefix={<SafetyOutlined />}
-                valueStyle={{ fontSize: 16 }}
-              />
-            </Card>
-          </Col>
-        </Row>
+        <SettingsOverviewStats databaseInfo={databaseInfo} formValues={formValues} t={t} />
 
-        {/* 标签页内容区域 */}
         <Tabs
           defaultActiveKey="1"
           size="large"
@@ -698,178 +679,13 @@ const Settings: React.FC = () => {
                 <Button onClick={() => form.resetFields()} disabled={loading}>
                   {t('common.reset')}
                 </Button>
-                <Button type="primary" onClick={handleSave} loading={loading}>
+                <Button type="primary" onClick={() => void handleSave()} loading={loading}>
                   {t('settings.saveSettings')}
                 </Button>
               </Space>
             </Space>
           }
-          items={[
-            {
-              key: '1',
-              label: t('settings.general'),
-              children: (
-                <>
-                  {/* Windows服务 */}
-                  <Card title={t('settings.windowsService')} style={{ marginBottom: 24 }}>
-                    <Form.Item label={t('settings.serviceStatus')}>
-                      <Badge status="processing" text={t('settings.running')} />
-                    </Form.Item>
-
-                    <Space style={{ marginBottom: 15 }}>
-                      <Button onClick={handlePauseService}>{t('settings.pauseService')}</Button>
-                      <Button onClick={handleRestartService}>{t('settings.restartService')}</Button>
-                    </Space>
-
-                    <Form.Item
-                      label={t('settings.autoStart')}
-                      name="autoStart"
-                      valuePropName="checked"
-                    >
-                      <Switch />
-                    </Form.Item>
-
-                    <Space>
-                      <Button onClick={handleInstallService}>{t('settings.installService')}</Button>
-                      <Button danger onClick={handleUninstallService}>
-                        {t('settings.uninstallService')}
-                      </Button>
-                      <Button onClick={handleViewServiceLog}>{t('settings.viewServiceLog')}</Button>
-                    </Space>
-                  </Card>
-
-                  {/* 外观设置 */}
-                  <Card title={t('settings.appearance')}>
-                    <Form.Item label={t('settings.scale')} name="scale">
-                      <Select style={{ width: 200 }}>
-                        <Select.Option value="75">75%</Select.Option>
-                        <Select.Option value="90">90%</Select.Option>
-                        <Select.Option value="100">
-                          100% ({t('common.recommend', { defaultValue: '推荐' })})
-                        </Select.Option>
-                        <Select.Option value="125">125%</Select.Option>
-                        <Select.Option value="150">150%</Select.Option>
-                      </Select>
-                    </Form.Item>
-
-                    <Form.Item label={t('settings.language')} name="language">
-                      <Select style={{ width: 200 }}>
-                        <Select.Option value="zh-CN">简体中文</Select.Option>
-                        <Select.Option value="en-US">English</Select.Option>
-                      </Select>
-                    </Form.Item>
-                  </Card>
-                </>
-              ),
-            },
-            {
-              key: '2',
-              label: t('settings.security'),
-              children: (
-                <>
-                  {/* 安全设置 */}
-                  <Card title={t('settings.securitySettings')} style={{ marginBottom: 24 }}>
-                    <Form.Item label={t('settings.credentialManagement')}>
-                      <Space direction="vertical">
-                        <Form.Item name="useWindowsCredentials" valuePropName="checked" noStyle>
-                          <Checkbox>{t('settings.useWindowsCredentials')}</Checkbox>
-                        </Form.Item>
-                        <Form.Item name="encryptSensitiveData" valuePropName="checked" noStyle>
-                          <Checkbox>{t('settings.encryptSensitiveData')}</Checkbox>
-                        </Form.Item>
-                        <Form.Item name="requirePasswordOnStartup" valuePropName="checked" noStyle>
-                          <Checkbox>{t('settings.requirePasswordOnStartup')}</Checkbox>
-                        </Form.Item>
-                      </Space>
-                    </Form.Item>
-
-                    <Form.Item label={t('settings.auditLog')}>
-                      <Space direction="vertical">
-                        <Form.Item name="logAllOperations" valuePropName="checked" noStyle>
-                          <Checkbox>{t('settings.logAllOperations')}</Checkbox>
-                        </Form.Item>
-                        <Form.Item name="writeToWindowsEventLog" valuePropName="checked" noStyle>
-                          <Checkbox>{t('settings.writeToWindowsEventLog')}</Checkbox>
-                        </Form.Item>
-                      </Space>
-                    </Form.Item>
-
-                    <Form.Item label={t('settings.logRetentionDays')} name="logRetentionDays">
-                      <InputNumber min={7} max={365} style={{ width: 100 }} />
-                    </Form.Item>
-
-                    <Space>
-                      <Button onClick={handleManagePassword}>{t('settings.managePassword')}</Button>
-                      <Button onClick={handleExportAuditLog}>{t('settings.exportAuditLog')}</Button>
-                      <Button danger onClick={handleClearCredentials}>
-                        {t('settings.clearCredentials')}
-                      </Button>
-                    </Space>
-                  </Card>
-                </>
-              ),
-            },
-            {
-              key: '3',
-              label: t('settings.data'),
-              children: (
-                <>
-                  {/* 数据管理 */}
-                  <Card title={t('settings.dataManagement')}>
-                    <p>
-                      <strong>{t('settings.databasePath')}:</strong> {databaseInfo.path}
-                    </p>
-                    <p>
-                      <strong>{t('settings.databaseSize')}:</strong> {databaseInfo.size}
-                    </p>
-
-                    <Space style={{ marginTop: 15 }}>
-                      <Button onClick={handleBackupData}>{t('settings.backupData')}</Button>
-                      <Button onClick={handleRestoreData}>{t('settings.restoreData')}</Button>
-                      <Button danger onClick={handleClearData}>
-                        {t('settings.clearData')}
-                      </Button>
-                    </Space>
-
-                    <Divider />
-
-                    <div>
-                      <div style={{ marginBottom: 8, fontWeight: 500 }}>
-                        {t('settings.configImportExport')}
-                      </div>
-                      <Space>
-                        <Button onClick={handleExportConfig}>{t('settings.exportConfig')}</Button>
-                        <Button onClick={handleImportConfig}>{t('settings.importConfig')}</Button>
-                      </Space>
-                    </div>
-                  </Card>
-                </>
-              ),
-            },
-            {
-              key: '4',
-              label: t('settings.about'),
-              children: (
-                <>
-                  {/* 关于 */}
-                  <Card title={t('settings.about')}>
-                    <p>
-                      <strong>{t('settings.aboutTitle')}</strong>
-                    </p>
-                    <p>{t('settings.version')}: V1.1.6</p>
-                    <p>{t('settings.electronVersion')}: 28.1.0</p>
-                    <p>{t('settings.reactVersion')}: 18.2.0</p>
-                    <Divider />
-                    <Space>
-                      <Button onClick={handleViewLicense}>{t('settings.viewLicense')}</Button>
-                      <Button onClick={handleCheckUpdate}>{t('settings.checkUpdate')}</Button>
-                      <Button onClick={handleContactSupport}>{t('settings.contactSupport')}</Button>
-                    </Space>
-                  </Card>
-                </>
-              ),
-            },
-          ]}
+          items={tabItems}
         />
       </Form>
     </div>

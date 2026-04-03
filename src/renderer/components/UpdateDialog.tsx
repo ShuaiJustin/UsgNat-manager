@@ -1,89 +1,85 @@
 import React, { useEffect } from 'react';
-import { Modal, Tag, List, Typography, message } from 'antd';
 import {
-  InfoCircleOutlined,
-  CheckCircleOutlined,
-  ExclamationCircleOutlined,
-  DownloadOutlined,
-  SafetyCertificateOutlined,
   CalendarOutlined,
+  CheckCircleOutlined,
+  DownloadOutlined,
+  ExclamationCircleOutlined,
+  InfoCircleOutlined,
+  SafetyCertificateOutlined,
 } from '@ant-design/icons';
+import { List, message, Modal, Tag, Typography } from 'antd';
 
 const { Text } = Typography;
 
-/**
- * 更新对话框组件
- * 监听主进程的更新消息并显示 Ant Design 风格的对话框
- * 
- * 功能：
- * - 显示更新日志
- * - 实时下载进度
- * - 完整性校验提示
- * - 自动备份提示
- */
+type UpdateChangelogItem = {
+  type?: string;
+  description?: string;
+};
+
+type UpdateDialogPayload = {
+  type?: 'no-update' | 'update-available' | 'update-downloaded' | 'update-error' | 'download-error';
+  version?: string;
+  currentVersion?: string;
+  changelog?: Array<UpdateChangelogItem | string>;
+  releaseDate?: string;
+  message?: string;
+};
+
+type UpdaterMessage = {
+  event?: 'show-update-dialog' | 'download-progress' | string;
+  data?: UpdateDialogPayload;
+};
+
+const getErrorMessage = (error: unknown): string =>
+  error instanceof Error ? error.message : '未知错误';
+
 const UpdateDialog: React.FC = () => {
   const [modal, contextHolder] = Modal.useModal();
 
   useEffect(() => {
-    const api = (window as any).electronAPI;
-    if (!api?.on) return;
+    const api = window.electronAPI;
+    if (!api?.on) {
+      return;
+    }
 
-    // 先清理可能存在的旧监听器
-
-    // 监听更新消息（包括下载进度）
-    const handleUpdaterMessage = (payload: any) => {
-      // 安全检查：确保 payload 存在且有 event 属性
-      if (!payload || typeof payload !== 'object' || !payload.event) {
-        // 静默忽略无效消息，避免控制台错误
+    const handleUpdaterMessage = (payload: unknown) => {
+      if (!isUpdaterMessage(payload)) {
         return;
       }
 
-      const { event: eventType, data } = payload;
-
-      // 忽略下载进度消息（后台下载）
-      if (eventType === 'download-progress') {
+      if (payload.event === 'download-progress') {
         return;
       }
 
-      // 忽略其他非对话框消息
-      if (eventType !== 'show-update-dialog') {
-        return;
-      }
-
-      // 安全检查：确保 data 存在
-      if (!data || typeof data !== 'object') {
-        console.warn('UpdateDialog: show-update-dialog 缺少 data', payload);
+      if (payload.event !== 'show-update-dialog' || !payload.data) {
         return;
       }
 
       const {
+        changelog,
+        currentVersion,
+        message: errorMessage,
+        releaseDate,
         type,
         version,
-        currentVersion,
-        changelog,
-        releaseDate,
-        message: errorMessage,
-      } = data;
+      } = payload.data;
 
       switch (type) {
         case 'no-update':
-          // 无可用更新
           modal.info({
             title: '无可用更新',
             icon: <InfoCircleOutlined style={{ color: '#1890ff' }} />,
             content: (
               <div>
-                <p>当前已是最新版本</p>
-                <p style={{ color: '#666', fontSize: '14px' }}>当前版本: v{version}</p>
+                <p>当前已是最新版本。</p>
+                <p style={{ color: '#666', fontSize: 14 }}>当前版本: v{version}</p>
               </div>
             ),
             okText: '确定',
             centered: true,
           });
-          break;
-
+          return;
         case 'update-available':
-          // 发现新版本 - 显示详细的更新信息
           modal.confirm({
             title: (
               <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -95,7 +91,6 @@ const UpdateDialog: React.FC = () => {
             width: 600,
             content: (
               <div style={{ padding: '16px 0' }}>
-                {/* 版本信息 */}
                 <div
                   style={{
                     display: 'flex',
@@ -130,7 +125,6 @@ const UpdateDialog: React.FC = () => {
                   </div>
                 </div>
 
-                {/* 发布日期 */}
                 {releaseDate && (
                   <div style={{ marginBottom: 12 }}>
                     <CalendarOutlined style={{ marginRight: 6 }} />
@@ -138,51 +132,51 @@ const UpdateDialog: React.FC = () => {
                   </div>
                 )}
 
-                {/* 更新日志 */}
                 {changelog && changelog.length > 0 && (
                   <div style={{ marginTop: 16 }}>
-                    <div style={{ marginBottom: 8, fontWeight: 'bold' }}>
-                      更新内容
-                    </div>
+                    <div style={{ marginBottom: 8, fontWeight: 'bold' }}>更新内容</div>
                     <List
                       size="small"
                       bordered
                       dataSource={changelog}
                       style={{ background: '#fff' }}
-                      renderItem={(item: any) => (
-                        <List.Item style={{ padding: '8px 16px' }}>
-                          <div style={{ width: '100%' }}>
-                            {item.type && (
+                      renderItem={(item) => {
+                        const normalizedItem =
+                          typeof item === 'string' ? { description: item } : item;
+                        const normalizedType = normalizedItem.type || 'default';
+
+                        return (
+                          <List.Item style={{ padding: '8px 16px' }}>
+                            <div style={{ width: '100%' }}>
                               <Tag
                                 color={
-                                  item.type === 'feature'
+                                  normalizedType === 'feature'
                                     ? 'green'
-                                    : item.type === 'fix'
+                                    : normalizedType === 'fix'
                                       ? 'orange'
-                                      : item.type === 'improve'
+                                      : normalizedType === 'improve'
                                         ? 'blue'
                                         : 'default'
                                 }
                                 style={{ marginRight: 8 }}
                               >
-                                {item.type === 'feature'
+                                {normalizedType === 'feature'
                                   ? '新功能'
-                                  : item.type === 'fix'
-                                    ? 'Bug修复'
-                                    : item.type === 'improve'
+                                  : normalizedType === 'fix'
+                                    ? 'Bug 修复'
+                                    : normalizedType === 'improve'
                                       ? '优化'
-                                      : item.type}
+                                      : normalizedType}
                               </Tag>
-                            )}
-                            <Text>{item.description || item}</Text>
-                          </div>
-                        </List.Item>
-                      )}
+                              <Text>{normalizedItem.description || ''}</Text>
+                            </div>
+                          </List.Item>
+                        );
+                      }}
                     />
                   </div>
                 )}
 
-                {/* 提示信息 */}
                 <div
                   style={{
                     marginTop: 16,
@@ -197,11 +191,11 @@ const UpdateDialog: React.FC = () => {
                     <Text strong>更新说明</Text>
                   </div>
                   <Text type="secondary" style={{ fontSize: 12 }}>
-                    下载完成后将自动校验文件完整性（SHA256）
+                    下载完成后将自动校验文件完整性（SHA256）。
                     <br />
-                    安装前会自动创建数据备份，确保安全
+                    安装前会自动创建数据备份，确保更新安全。
                     <br />
-                    如下载失败，将自动重试最多3次
+                    如果下载失败，将自动重试最多 3 次。
                   </Text>
                 </div>
               </div>
@@ -210,14 +204,13 @@ const UpdateDialog: React.FC = () => {
             cancelText: '稍后提醒',
             centered: true,
             onOk: () => {
-              // 显示可最小化的下载提示
               modal.info({
                 title: '正在后台下载更新',
                 content: (
                   <div>
-                    <p>更新正在后台下载，您可以继续使用应用</p>
+                    <p>更新正在后台下载，您可以继续使用应用。</p>
                     <p style={{ color: '#999', fontSize: 12, marginTop: 8 }}>
-                      下载完成后会自动提示安装
+                      下载完成后会自动提示安装。
                     </p>
                   </div>
                 ),
@@ -227,11 +220,10 @@ const UpdateDialog: React.FC = () => {
                 maskClosable: true,
               });
 
-              // 调用下载更新（异步，不等待）
               if (api?.updater?.downloadUpdate) {
                 void api.updater
                   .downloadUpdate()
-                  .then((result: any) => {
+                  .then((result) => {
                     if (!result?.success) {
                       message.error({
                         content: `下载失败: ${result?.message || '未知错误'}`,
@@ -239,19 +231,17 @@ const UpdateDialog: React.FC = () => {
                       });
                     }
                   })
-                  .catch((error: any) => {
+                  .catch((error) => {
                     message.error({
-                      content: `下载失败: ${error?.message || '未知错误'}`,
+                      content: `下载失败: ${getErrorMessage(error)}`,
                       duration: 5,
                     });
                   });
               }
             },
           });
-          break;
-
+          return;
         case 'update-downloaded':
-          // 更新下载完成
           modal.confirm({
             title: (
               <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -298,17 +288,11 @@ const UpdateDialog: React.FC = () => {
                     <Text strong>安装提示</Text>
                   </div>
                   <Text type="secondary" style={{ fontSize: 12 }}>
-                    安装前将自动创建数据备份
+                    安装前会自动创建数据备份。
                     <br />
-                    应用将关闭并启动安装程序
+                    应用将关闭并启动安装程序。
                     <br />
-                    安装完成后请重新启动应用
-                  </Text>
-                </div>
-
-                <div style={{ marginTop: 16, textAlign: 'center' }}>
-                  <Text type="secondary" style={{ fontSize: 13 }}>
-                    是否立即安装更新？
+                    安装完成后请重新启动应用。
                   </Text>
                 </div>
               </div>
@@ -316,9 +300,7 @@ const UpdateDialog: React.FC = () => {
             okText: '立即安装',
             cancelText: '稍后安装',
             centered: true,
-            okButtonProps: { type: 'primary', danger: false },
             onOk: async () => {
-              // 退出并安装
               try {
                 if (api?.updater?.quitAndInstall) {
                   const result = await api.updater.quitAndInstall();
@@ -326,65 +308,59 @@ const UpdateDialog: React.FC = () => {
                     throw new Error(result?.message || '未知错误');
                   }
                 }
-              } catch (error: any) {
+              } catch (error) {
                 message.error({
-                  content: `安装失败: ${error.message || '未知错误'}`,
+                  content: `安装失败: ${getErrorMessage(error)}`,
                   duration: 5,
                 });
               }
             },
           });
-          break;
-
+          return;
         case 'update-error':
-          // 检查更新失败
           modal.error({
             title: '检查更新失败',
             icon: <ExclamationCircleOutlined style={{ color: '#ff4d4f' }} />,
             content: (
               <div>
-                <p>无法连接到更新服务器</p>
-                <p style={{ color: '#666', fontSize: '14px' }}>{errorMessage}</p>
+                <p>无法连接到更新服务器。</p>
+                <p style={{ color: '#666', fontSize: 14 }}>{errorMessage}</p>
               </div>
             ),
             okText: '确定',
             centered: true,
           });
-          break;
-
+          return;
         case 'download-error':
-          // 下载失败
           modal.error({
             title: '下载失败',
             icon: <ExclamationCircleOutlined style={{ color: '#ff4d4f' }} />,
             content: (
               <div>
-                <p>更新下载失败</p>
-                <p style={{ color: '#666', fontSize: '14px' }}>{errorMessage}</p>
+                <p>更新下载失败。</p>
+                <p style={{ color: '#666', fontSize: 14 }}>{errorMessage}</p>
               </div>
             ),
             okText: '确定',
             centered: true,
           });
-          break;
-
+          return;
         default:
-          break;
+          return;
       }
     };
 
-    // 注册监听器
     api.on('updater-message', handleUpdaterMessage);
 
-    // 清理监听器
     return () => {
-      if (api?.off) {
-        api.off('updater-message', handleUpdaterMessage);
-      }
+      api.off?.('updater-message', handleUpdaterMessage);
     };
-  }, [modal]); // 移除 downloadProgress 依赖，避免重复注册监听器
+  }, [modal]);
 
   return <>{contextHolder}</>;
 };
+
+const isUpdaterMessage = (value: unknown): value is UpdaterMessage =>
+  typeof value === 'object' && value !== null;
 
 export default UpdateDialog;

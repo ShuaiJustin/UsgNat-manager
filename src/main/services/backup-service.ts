@@ -1,12 +1,11 @@
+import type { Config, CredentialRef, Device, Log, NatRule } from '@prisma/client';
 import { app } from 'electron';
 import fs from 'fs/promises';
 import path from 'path';
+
 import { logger } from './logger';
 import { prisma } from './prisma-client';
 
-/**
- * 备份信息
- */
 export interface BackupInfo {
   id: string;
   filename: string;
@@ -18,10 +17,24 @@ export interface BackupInfo {
   logCount: number;
 }
 
-/**
- * 备份服务
- * 负责数据库备份和恢复
- */
+type BackupFilePayload = {
+  data?: {
+    devices?: Device[];
+    rules?: NatRule[];
+    logs?: Log[];
+    configs?: Config[];
+    credentials?: CredentialRef[];
+  };
+  stats?: {
+    deviceCount?: number;
+    ruleCount?: number;
+    logCount?: number;
+  };
+};
+
+const getErrorMessage = (error: unknown, fallback: string): string =>
+  error instanceof Error ? error.message : fallback;
+
 class BackupService {
   private backupDir: string;
 
@@ -30,10 +43,7 @@ class BackupService {
     this.ensureBackupDir();
   }
 
-  /**
-   * 确保备份目录存在
-   */
-  private async ensureBackupDir() {
+  private async ensureBackupDir(): Promise<void> {
     try {
       await fs.mkdir(this.backupDir, { recursive: true });
     } catch (error) {
@@ -41,19 +51,15 @@ class BackupService {
     }
   }
 
-  /**
-   * 创建备份
-   */
   async createBackup(description?: string): Promise<BackupInfo> {
     try {
       await logger.info('备份服务', '开始创建备份');
 
-      // 获取所有数据
       const devices = await prisma.device.findMany();
       const rules = await prisma.natRule.findMany();
       const logs = await prisma.log.findMany({
         orderBy: { createdAt: 'desc' },
-        take: 1000, // 只备份最近1000条日志
+        take: 1000,
       });
       const configs = await prisma.config.findMany();
       const credentials = await prisma.credentialRef.findMany();
@@ -77,15 +83,11 @@ class BackupService {
         },
       };
 
-      // 生成备份文件名
       const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
       const filename = `backup-${timestamp}.json`;
       const filePath = path.join(this.backupDir, filename);
 
-      // 写入文件
       await fs.writeFile(filePath, JSON.stringify(backupData, null, 2), 'utf-8');
-
-      // 获取文件大小
       const stats = await fs.stat(filePath);
 
       const backupInfo: BackupInfo = {
@@ -105,28 +107,24 @@ class BackupService {
       });
 
       return backupInfo;
-    } catch (error: any) {
-      await logger.error('备份服务', '备份创建失败', { error: error.message });
+    } catch (error) {
+      const errorMessage = getErrorMessage(error, '创建备份失败');
+      await logger.error('备份服务', '备份创建失败', { error: errorMessage });
       throw error;
     }
   }
 
-  /**
-   * 恢复备份
-   */
   async restoreBackup(filePath: string): Promise<void> {
     try {
       await logger.info('备份服务', '开始恢复备份', { path: filePath });
 
-      // 读取备份文件
       const content = await fs.readFile(filePath, 'utf-8');
-      const backupData = JSON.parse(content);
+      const backupData = JSON.parse(content) as BackupFilePayload;
 
       if (!backupData.data) {
         throw new Error('无效的备份文件格式');
       }
 
-      // 清空现有数据（使用事务）
       await prisma.$transaction([
         prisma.natRule.deleteMany({}),
         prisma.device.deleteMany({}),
@@ -135,57 +133,62 @@ class BackupService {
         prisma.credentialRef.deleteMany({}),
       ]);
 
-      // 恢复数据
-      const { devices, rules, logs, configs, credentials } = backupData.data;
+      const {
+        devices = [],
+        rules = [],
+        logs = [],
+        configs = [],
+        credentials = [],
+      } = backupData.data;
 
-      if (devices?.length > 0) {
+      if (devices.length > 0) {
         await prisma.device.createMany({ data: devices });
       }
 
-      if (rules?.length > 0) {
+      if (rules.length > 0) {
         await prisma.natRule.createMany({ data: rules });
       }
 
-      if (logs?.length > 0) {
+      if (logs.length > 0) {
         await prisma.log.createMany({ data: logs });
       }
 
-      if (configs?.length > 0) {
+      if (configs.length > 0) {
         await prisma.config.createMany({ data: configs });
       }
 
-      if (credentials?.length > 0) {
+      if (credentials.length > 0) {
         await prisma.credentialRef.createMany({ data: credentials });
       }
 
       await logger.success('备份服务', '备份恢复成功', {
-        devices: devices?.length || 0,
-        rules: rules?.length || 0,
-        logs: logs?.length || 0,
+        devices: devices.length,
+        rules: rules.length,
+        logs: logs.length,
       });
-    } catch (error: any) {
-      await logger.error('备份服务', '备份恢复失败', { error: error.message });
+    } catch (error) {
+      const errorMessage = getErrorMessage(error, '恢复备份失败');
+      await logger.error('备份服务', '备份恢复失败', { error: errorMessage });
       throw error;
     }
   }
 
-  /**
-   * 获取备份列表
-   */
   async listBackups(): Promise<BackupInfo[]> {
     try {
       const files = await fs.readdir(this.backupDir);
       const backups: BackupInfo[] = [];
 
       for (const filename of files) {
-        if (!filename.endsWith('.json')) continue;
+        if (!filename.endsWith('.json')) {
+          continue;
+        }
 
         const filePath = path.join(this.backupDir, filename);
         const stats = await fs.stat(filePath);
 
         try {
           const content = await fs.readFile(filePath, 'utf-8');
-          const data = JSON.parse(content);
+          const data = JSON.parse(content) as BackupFilePayload;
 
           backups.push({
             id: filename.replace('.json', ''),
@@ -202,31 +205,27 @@ class BackupService {
         }
       }
 
-      return backups.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
-    } catch (error: any) {
-      await logger.error('备份服务', '获取备份列表失败', { error: error.message });
+      return backups.sort((left, right) => right.createdAt.getTime() - left.createdAt.getTime());
+    } catch (error) {
+      await logger.error('备份服务', '获取备份列表失败', {
+        error: getErrorMessage(error, '获取备份列表失败'),
+      });
       return [];
     }
   }
 
-  /**
-   * 删除备份
-   */
   async deleteBackup(filename: string): Promise<void> {
     try {
-      const filePath = path.join(this.backupDir, filename);
-      await fs.unlink(filePath);
+      await fs.unlink(path.join(this.backupDir, filename));
       await logger.info('备份服务', '备份删除成功', { filename });
-    } catch (error: any) {
-      await logger.error('备份服务', '备份删除失败', { error: error.message });
+    } catch (error) {
+      const errorMessage = getErrorMessage(error, '删除备份失败');
+      await logger.error('备份服务', '备份删除失败', { error: errorMessage });
       throw error;
     }
   }
 
-  /**
-   * 清理旧备份（保留最近N个）
-   */
-  async cleanupOldBackups(keepCount: number = 10): Promise<number> {
+  async cleanupOldBackups(keepCount = 10): Promise<number> {
     try {
       const backups = await this.listBackups();
 
@@ -248,22 +247,18 @@ class BackupService {
 
       await logger.info('备份服务', `清理了 ${deletedCount} 个旧备份`);
       return deletedCount;
-    } catch (error: any) {
-      await logger.error('备份服务', '清理备份失败', { error: error.message });
+    } catch (error) {
+      await logger.error('备份服务', '清理备份失败', {
+        error: getErrorMessage(error, '清理备份失败'),
+      });
       return 0;
     }
   }
 
-  /**
-   * 获取备份目录路径
-   */
   getBackupDir(): string {
     return this.backupDir;
   }
 
-  /**
-   * 获取备份统计
-   */
   async getBackupStats(): Promise<{
     totalBackups: number;
     totalSize: number;
@@ -282,16 +277,16 @@ class BackupService {
         };
       }
 
-      const totalSize = backups.reduce((sum, backup) => sum + backup.size, 0);
-
       return {
         totalBackups: backups.length,
-        totalSize,
+        totalSize: backups.reduce((sum, backup) => sum + backup.size, 0),
         oldestBackup: backups[backups.length - 1].createdAt,
         newestBackup: backups[0].createdAt,
       };
-    } catch (error: any) {
-      await logger.error('备份服务', '获取备份统计失败', { error: error.message });
+    } catch (error) {
+      await logger.error('备份服务', '获取备份统计失败', {
+        error: getErrorMessage(error, '获取备份统计失败'),
+      });
       return {
         totalBackups: 0,
         totalSize: 0,
@@ -302,5 +297,4 @@ class BackupService {
   }
 }
 
-// 导出单例
 export const backupService = new BackupService();

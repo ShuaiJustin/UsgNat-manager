@@ -1,21 +1,28 @@
 import React, { useEffect, useState } from 'react';
 import {
-  Modal,
+  Alert,
+  App,
+  Button,
+  Checkbox,
+  Divider,
   Form,
   Input,
-  Select,
   InputNumber,
+  Modal,
+  Select,
   Switch,
-  App,
-  Divider,
-  Checkbox,
-  Button,
-  Alert,
 } from 'antd';
 import { UploadOutlined } from '@ant-design/icons';
 import { useMutation } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
+
 import type { Credential, Device } from '@/types';
+import {
+  buildCredentialPayload,
+  getDeviceAccessValidationError,
+  getFieldsToValidate,
+  shouldSaveCredential,
+} from './deviceModalHelpers';
 
 interface DeviceModalProps {
   open: boolean;
@@ -24,12 +31,35 @@ interface DeviceModalProps {
   onSuccess: () => void;
 }
 
+type SupportedAuthType = NonNullable<Credential['authType']>;
+
+type DeviceFormValues = Partial<Device> & {
+  authType?: SupportedAuthType;
+  username?: string;
+  password?: string;
+  privateKeyPath?: string;
+  certificatePath?: string;
+  passphrase?: string;
+  mfaType?: Credential['mfaType'];
+  mfaCode?: string;
+  caCertPath?: string;
+  saveToCredentialManager?: boolean;
+};
+
+type DeviceMutationPayload = {
+  id: string;
+  values: Partial<Device>;
+};
+
+const getErrorMessage = (error: unknown, fallback: string): string =>
+  error instanceof Error ? error.message : fallback;
+
 const DeviceModal: React.FC<DeviceModalProps> = ({ open, device, onClose, onSuccess }) => {
   const { t } = useTranslation();
   const { message } = App.useApp();
-  const [form] = Form.useForm();
+  const [form] = Form.useForm<DeviceFormValues>();
   const isEdit = !!device;
-  const [authType, setAuthType] = useState<string>('Password');
+  const [authType, setAuthType] = useState<SupportedAuthType>('Password');
   const [storedCredential, setStoredCredential] = useState<Credential | null>(null);
   const selectedConnectionType = Form.useWatch('connectionType', form) || 'SSH';
   const selectedFormAuthType = Form.useWatch('authType', form) || authType;
@@ -61,9 +91,8 @@ const DeviceModal: React.FC<DeviceModalProps> = ({ open, device, onClose, onSucc
         mfaCode: undefined,
       });
 
-      const api = (window as any).electronAPI;
+      const api = window.electronAPI;
       const credential = api?.credential?.get ? await api.credential.get(device.id) : null;
-
       if (!isActive) {
         return;
       }
@@ -80,7 +109,7 @@ const DeviceModal: React.FC<DeviceModalProps> = ({ open, device, onClose, onSucc
       });
     };
 
-    loadFormData().catch(() => {
+    void loadFormData().catch(() => {
       if (!isActive) {
         return;
       }
@@ -100,7 +129,7 @@ const DeviceModal: React.FC<DeviceModalProps> = ({ open, device, onClose, onSucc
     filters: Array<{ name: string; extensions: string[] }>
   ) => {
     try {
-      const api = (window as any).electronAPI;
+      const api = window.electronAPI;
       if (!api?.system?.selectFile) {
         message.error(t('common.error'));
         return;
@@ -110,46 +139,40 @@ const DeviceModal: React.FC<DeviceModalProps> = ({ open, device, onClose, onSucc
       if (selectedPath) {
         form.setFieldValue(fieldName, selectedPath);
       }
-    } catch (error: any) {
-      message.error(error?.message || t('common.error'));
+    } catch (error) {
+      message.error(getErrorMessage(error, t('common.error')));
     }
   };
 
-  // 创建设备
   const createMutation = useMutation({
-    mutationFn: async (values: any) => {
-      const api = (window as any).electronAPI;
+    mutationFn: async (values: Partial<Device>) => {
+      const api = window.electronAPI;
       if (!api?.device?.create) {
         throw new Error('electronAPI 未就绪，无法创建设备');
       }
-      return await api.device.create(values);
+      return api.device.create(values);
     },
-    onError: (error: any) => {
-      const errorMsg = error?.message || t('common.error');
-      message.error(`创建设备失败: ${errorMsg}`);
+    onError: (error: unknown) => {
+      message.error(`创建设备失败: ${getErrorMessage(error, t('common.error'))}`);
     },
   });
 
-  // 更新设备
   const updateMutation = useMutation({
-    mutationFn: async ({ id, values }: { id: string; values: any }) => {
-      const api = (window as any).electronAPI;
+    mutationFn: async ({ id, values }: DeviceMutationPayload) => {
+      const api = window.electronAPI;
       if (!api?.device?.update) {
         throw new Error('electronAPI 未就绪，无法更新设备');
       }
-      return await api.device.update(id, values);
+      return api.device.update(id, values);
     },
-    onError: (error: any) => {
-      const errorMsg = error?.message || t('common.error');
-      message.error(`更新设备失败: ${errorMsg}`);
+    onError: (error: unknown) => {
+      message.error(`更新设备失败: ${getErrorMessage(error, t('common.error'))}`);
     },
   });
 
   const handleSubmit = async () => {
     try {
       const values = await form.validateFields();
-
-      // 分离设备信息和凭据信息
       const {
         username,
         password,
@@ -159,165 +182,133 @@ const DeviceModal: React.FC<DeviceModalProps> = ({ open, device, onClose, onSucc
         mfaType,
         mfaCode: _mfaCode,
         caCertPath: _caCertPath,
-        authType: _formAuthType,
+        authType: formAuthType,
         saveToCredentialManager: _saveToCredentialManager,
         ...deviceData
       } = values;
 
       const selectedConnectionTypeValue = values.connectionType || 'SSH';
-      const selectedAuthType = values.authType || authType;
+      const selectedAuthType = formAuthType || authType;
+      const deviceAccessValidationError = getDeviceAccessValidationError(
+        selectedConnectionTypeValue,
+        selectedAuthType
+      );
 
-      if (selectedConnectionTypeValue !== 'SSH') {
+      if (deviceAccessValidationError === 'unsupported-connection') {
         message.error('当前版本仅支持 SSH 连接');
         return;
       }
 
-      if (!['Password', 'PrivateKey'].includes(selectedAuthType)) {
+      if (deviceAccessValidationError === 'unsupported-auth') {
         message.error('当前版本仅支持密码或私钥认证');
         return;
       }
 
       let savedDeviceId = device?.id;
+      let createdDeviceId: string | null = null;
       let credentialSaveSuccess = true;
 
       if (isEdit && device) {
         await updateMutation.mutateAsync({ id: device.id, values: deviceData });
         savedDeviceId = device.id;
       } else {
-        // 先创建设备
         const newDevice = await createMutation.mutateAsync(deviceData);
         savedDeviceId = newDevice.id;
+        createdDeviceId = newDevice.id;
       }
 
-      const credentialPayload = {
-        authType: selectedAuthType as 'Password' | 'PrivateKey' | 'Certificate' | 'MultiFactor',
-        username: username || storedCredential?.username,
-        password:
-          selectedAuthType === 'Password' || selectedAuthType === 'MultiFactor'
-            ? password || storedCredential?.password
-            : undefined,
-        privateKeyPath: privateKeyPath || undefined,
-        privateKey: privateKeyPath ? undefined : storedCredential?.privateKey,
-        certificatePath: certificatePath || undefined,
-        certificate: certificatePath ? undefined : storedCredential?.certificate,
-        mfaType: mfaType || storedCredential?.mfaType,
-      };
+      const credentialPayload = buildCredentialPayload(
+        {
+          authType: selectedAuthType,
+          username,
+          password,
+          privateKeyPath,
+          certificatePath,
+          mfaType,
+        },
+        storedCredential
+      );
 
-      const shouldSaveCredential =
-        !!savedDeviceId &&
-        !!credentialPayload.username &&
-        (((selectedAuthType === 'Password' || selectedAuthType === 'MultiFactor') &&
-          !!credentialPayload.password) ||
-          (selectedAuthType === 'PrivateKey' &&
-            !!(credentialPayload.privateKeyPath || credentialPayload.privateKey)) ||
-          (selectedAuthType === 'Certificate' &&
-            !!(credentialPayload.privateKeyPath || credentialPayload.privateKey) &&
-            !!(credentialPayload.certificatePath || credentialPayload.certificate)));
-
-      // 保存凭据信息
-      if (shouldSaveCredential) {
+      const shouldSaveDeviceCredential = shouldSaveCredential(savedDeviceId, credentialPayload);
+      if (shouldSaveDeviceCredential) {
         try {
-          const api = (window as any).electronAPI;
+          const api = window.electronAPI;
           if (!api?.credential?.save) {
             throw new Error('credential API 不可用');
           }
           await api.credential.save(savedDeviceId, credentialPayload);
-        } catch (error: any) {
+        } catch (error) {
           credentialSaveSuccess = false;
-          message.error(`凭据保存失败: ${error.message}`);
-          // 凭据保存失败，不关闭对话框，让用户重试
+          if (createdDeviceId) {
+            try {
+              const api = window.electronAPI;
+              if (api?.device?.delete) {
+                await api.device.delete(createdDeviceId);
+              }
+            } catch (rollbackError) {
+              console.error('回滚新建设备失败:', rollbackError);
+            }
+          }
+
+          message.error(`凭据保存失败: ${getErrorMessage(error, t('common.error'))}`);
           return;
         }
       }
 
-      // 所有操作成功，刷新列表并关闭对话框
       onSuccess();
       onClose();
 
-      // 显示最终成功消息
       if (credentialSaveSuccess) {
         message.success(isEdit ? '设备更新成功' : '设备添加成功');
       }
 
-      // 自动测试连接并更新在线状态（延迟600ms确保凭据已保存）
       if (savedDeviceId) {
-        setTimeout(async () => {
-          try {
-            const api = (window as any).electronAPI;
-            if (api?.device?.testConnection) {
-              // 静默测试（不显示loading，避免干扰用户）
-              const result = await api.device.testConnection(savedDeviceId);
-
-              if (result.success) {
-                message.success(
-                  `连接测试成功 - 延迟 ${result.latency}ms`
-                );
-              } else {
-                message.warning(
-                  `连接测试失败: ${result.message}`
-                );
+        window.setTimeout(() => {
+          void (async () => {
+            try {
+              const api = window.electronAPI;
+              if (api?.device?.testConnection) {
+                const result = await api.device.testConnection(savedDeviceId);
+                if (result.success) {
+                  message.success(`连接测试成功 - 延迟 ${result.latency}ms`);
+                } else {
+                  message.warning(`连接测试失败: ${result.message}`);
+                }
+                onSuccess();
               }
-
-              // 刷新设备列表以显示最新状态
-              onSuccess();
+            } catch (error) {
+              console.error('自动测试连接失败:', error);
             }
-          } catch (error) {
-            // 静默失败，不影响用户体验
-            console.error('自动测试连接失败:', error);
-          }
+          })();
         }, 600);
       }
     } catch {
-      // 表单验证失败，不需要额外处理
+      // Form validation already shows inline errors.
     }
   };
 
   const handleTestConnection = async () => {
     try {
       const values = form.getFieldsValue();
-      const api = (window as any).electronAPI;
+      const api = window.electronAPI;
       const selectedConnectionTypeValue = values.connectionType || 'SSH';
       const selectedAuthType = values.authType || authType;
+      const deviceAccessValidationError = getDeviceAccessValidationError(
+        selectedConnectionTypeValue,
+        selectedAuthType
+      );
 
-      if (selectedConnectionTypeValue !== 'SSH') {
+      if (deviceAccessValidationError === 'unsupported-connection') {
         message.error('当前版本仅支持 SSH 连接');
         return;
       }
 
-      if (!['Password', 'PrivateKey'].includes(selectedAuthType)) {
+      if (deviceAccessValidationError === 'unsupported-auth') {
         message.error('当前版本仅支持密码或私钥认证');
         return;
       }
 
-      const fieldsToValidate = ['host', 'port', 'username'];
-      if (selectedAuthType === 'Password' || selectedAuthType === 'MultiFactor') {
-        fieldsToValidate.push('password');
-      }
-      if (
-        selectedAuthType === 'PrivateKey' &&
-        !values.privateKeyPath &&
-        !(storedCredential?.authType === 'PrivateKey' && storedCredential.privateKey)
-      ) {
-        fieldsToValidate.push('privateKeyPath');
-      }
-      if (selectedAuthType === 'Certificate') {
-        if (
-          !values.certificatePath &&
-          !(storedCredential?.authType === 'Certificate' && storedCredential.certificate)
-        ) {
-          fieldsToValidate.push('certificatePath');
-        }
-        if (
-          !values.privateKeyPath &&
-          !(storedCredential?.authType === 'Certificate' && storedCredential.privateKey)
-        ) {
-          fieldsToValidate.push('privateKeyPath');
-        }
-      }
-      if (selectedAuthType === 'MultiFactor') {
-        fieldsToValidate.push('mfaType');
-      }
-
+      const fieldsToValidate = getFieldsToValidate(values, selectedAuthType, storedCredential);
       await form.validateFields(fieldsToValidate);
 
       if (!api?.device?.testDirectConnection) {
@@ -328,11 +319,10 @@ const DeviceModal: React.FC<DeviceModalProps> = ({ open, device, onClose, onSucc
       const hideLoading = message.loading(t('common.loading'), 0);
 
       try {
-        // 调用直接测试连接（不需要保存设备）
         const result = await api.device.testDirectConnection({
           connectionType: selectedConnectionTypeValue,
-          host: values.host,
-          port: values.port,
+          host: values.host || '',
+          port: values.port || 22,
           username: values.username || storedCredential?.username,
           password: values.password || storedCredential?.password,
           privateKeyPath: values.privateKeyPath,
@@ -351,9 +341,9 @@ const DeviceModal: React.FC<DeviceModalProps> = ({ open, device, onClose, onSucc
         } else {
           message.error(`${t('devices.connectionFailed')}: ${result.message}`);
         }
-      } catch (error: any) {
+      } catch (error) {
         hideLoading();
-        message.error(`${t('common.error')}: ${error.message || t('common.error')}`);
+        message.error(`${t('common.error')}: ${getErrorMessage(error, t('common.error'))}`);
       }
     } catch {
       message.warning(t('devices.credentials'));
@@ -362,9 +352,9 @@ const DeviceModal: React.FC<DeviceModalProps> = ({ open, device, onClose, onSucc
 
   return (
     <Modal
-      title={isEdit ? t('common.edit') + ' ' + t('devices.title') : t('devices.addDevice')}
+      title={isEdit ? `${t('common.edit')} ${t('devices.title')}` : t('devices.addDevice')}
       open={open}
-      onOk={handleSubmit}
+      onOk={() => void handleSubmit()}
       onCancel={onClose}
       confirmLoading={createMutation.isPending || updateMutation.isPending}
       width={600}
@@ -376,7 +366,7 @@ const DeviceModal: React.FC<DeviceModalProps> = ({ open, device, onClose, onSucc
       okText={t('common.save')}
       cancelText={t('common.cancel')}
       footer={[
-        <Button key="test" onClick={handleTestConnection}>
+        <Button key="test" onClick={() => void handleTestConnection()}>
           {t('devices.testConnection')}
         </Button>,
         <Button key="cancel" onClick={onClose}>
@@ -386,7 +376,7 @@ const DeviceModal: React.FC<DeviceModalProps> = ({ open, device, onClose, onSucc
           key="submit"
           type="primary"
           loading={createMutation.isPending || updateMutation.isPending}
-          onClick={handleSubmit}
+          onClick={() => void handleSubmit()}
         >
           {t('common.save')}
         </Button>,
@@ -415,24 +405,25 @@ const DeviceModal: React.FC<DeviceModalProps> = ({ open, device, onClose, onSucc
           rules={[
             { required: true, message: t('devices.host') },
             {
-              validator: (_, value) => {
-                if (!value) return Promise.resolve();
-                // 支持IP地址
+              validator: (_, value: string) => {
+                if (!value) {
+                  return Promise.resolve();
+                }
+
                 const ipPattern = /^(\d{1,3}\.){3}\d{1,3}$/;
-                // 支持域名
-                const domainPattern = /^([a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}$/;
-                // 支持localhost
+                const domainPattern =
+                  /^([a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}$/;
                 if (value === 'localhost' || ipPattern.test(value) || domainPattern.test(value)) {
-                  // 对IP地址进行范围验证
                   if (ipPattern.test(value)) {
                     const parts = value.split('.').map(Number);
-                    if (parts.some((part: number) => part < 0 || part > 255)) {
-                      return Promise.reject(new Error('IP地址段必须在0-255之间'));
+                    if (parts.some((part) => part < 0 || part > 255)) {
+                      return Promise.reject(new Error('IP 地址段必须在 0-255 之间'));
                     }
                   }
                   return Promise.resolve();
                 }
-                return Promise.reject(new Error('请输入有效的IP地址或域名'));
+
+                return Promise.reject(new Error('请输入有效的 IP 地址或域名'));
               },
             },
           ]}
@@ -487,7 +478,7 @@ const DeviceModal: React.FC<DeviceModalProps> = ({ open, device, onClose, onSucc
 
         <Form.Item label="认证方式" name="authType" initialValue="Password">
           <Select
-            onChange={(value) => {
+            onChange={(value: SupportedAuthType) => {
               if (value === 'Certificate' || value === 'MultiFactor') {
                 message.warning('Only Password and PrivateKey auth are supported.');
               }
@@ -496,12 +487,15 @@ const DeviceModal: React.FC<DeviceModalProps> = ({ open, device, onClose, onSucc
           >
             <Select.Option value="Password">密码认证</Select.Option>
             <Select.Option value="PrivateKey">私钥认证</Select.Option>
-            <Select.Option value="Certificate">证书认证</Select.Option>
-            <Select.Option value="MultiFactor">多因子认证</Select.Option>
+            <Select.Option value="Certificate" disabled>
+              证书认证 (暂不支持)
+            </Select.Option>
+            <Select.Option value="MultiFactor" disabled>
+              多因素认证 (暂不支持)
+            </Select.Option>
           </Select>
         </Form.Item>
 
-        {/* 密码认证 */}
         {['Certificate', 'MultiFactor'].includes(selectedFormAuthType) && (
           <Alert
             type="warning"
@@ -525,15 +519,14 @@ const DeviceModal: React.FC<DeviceModalProps> = ({ open, device, onClose, onSucc
               name="password"
               rules={[{ required: true, message: t('devices.password') }]}
             >
-              <Input.Password placeholder="••••••••" />
+              <Input.Password />
             </Form.Item>
             <Form.Item name="saveToCredentialManager" valuePropName="checked">
-              <Checkbox>保存到Windows凭据管理器</Checkbox>
+              <Checkbox>保存到 Windows 凭据管理器</Checkbox>
             </Form.Item>
           </>
         )}
 
-        {/* 私钥认证 */}
         {selectedFormAuthType === 'PrivateKey' && (
           <>
             <Form.Item
@@ -548,8 +541,9 @@ const DeviceModal: React.FC<DeviceModalProps> = ({ open, device, onClose, onSucc
               name="privateKeyPath"
               rules={[
                 {
-                  required:
-                    !(storedCredential?.authType === 'PrivateKey' && storedCredential.privateKey),
+                  required: !(
+                    storedCredential?.authType === 'PrivateKey' && storedCredential.privateKey
+                  ),
                   message: '请选择私钥文件',
                 },
               ]}
@@ -560,13 +554,13 @@ const DeviceModal: React.FC<DeviceModalProps> = ({ open, device, onClose, onSucc
               }
             >
               <Input
-                placeholder="C:\Users\admin\.ssh\id_rsa"
+                placeholder="C:\\Users\\admin\\.ssh\\id_rsa"
                 addonAfter={
                   <Button
                     size="small"
                     icon={<UploadOutlined />}
                     onClick={() =>
-                      handleSelectFile('privateKeyPath', [
+                      void handleSelectFile('privateKeyPath', [
                         { name: 'Private Keys', extensions: ['pem', 'key', 'ppk', 'txt'] },
                       ])
                     }
@@ -577,12 +571,11 @@ const DeviceModal: React.FC<DeviceModalProps> = ({ open, device, onClose, onSucc
               />
             </Form.Item>
             <Form.Item label="私钥密码(可选)" name="passphrase">
-              <Input.Password placeholder="••••••••" />
+              <Input.Password />
             </Form.Item>
           </>
         )}
 
-        {/* 证书认证 */}
         {selectedFormAuthType === 'Certificate' && (
           <>
             <Form.Item
@@ -597,10 +590,9 @@ const DeviceModal: React.FC<DeviceModalProps> = ({ open, device, onClose, onSucc
               name="certificatePath"
               rules={[
                 {
-                  required:
-                    !(
-                      storedCredential?.authType === 'Certificate' && storedCredential.certificate
-                    ),
+                  required: !(
+                    storedCredential?.authType === 'Certificate' && storedCredential.certificate
+                  ),
                   message: '请选择证书文件',
                 },
               ]}
@@ -611,13 +603,13 @@ const DeviceModal: React.FC<DeviceModalProps> = ({ open, device, onClose, onSucc
               }
             >
               <Input
-                placeholder="C:\Certs\admin.crt"
+                placeholder="C:\\Certs\\admin.crt"
                 addonAfter={
                   <Button
                     size="small"
                     icon={<UploadOutlined />}
                     onClick={() =>
-                      handleSelectFile('certificatePath', [
+                      void handleSelectFile('certificatePath', [
                         { name: 'Certificates', extensions: ['crt', 'cer', 'pem'] },
                       ])
                     }
@@ -632,10 +624,9 @@ const DeviceModal: React.FC<DeviceModalProps> = ({ open, device, onClose, onSucc
               name="privateKeyPath"
               rules={[
                 {
-                  required:
-                    !(
-                      storedCredential?.authType === 'Certificate' && storedCredential.privateKey
-                    ),
+                  required: !(
+                    storedCredential?.authType === 'Certificate' && storedCredential.privateKey
+                  ),
                   message: '请选择私钥文件',
                 },
               ]}
@@ -646,13 +637,13 @@ const DeviceModal: React.FC<DeviceModalProps> = ({ open, device, onClose, onSucc
               }
             >
               <Input
-                placeholder="C:\Certs\admin.key"
+                placeholder="C:\\Certs\\admin.key"
                 addonAfter={
                   <Button
                     size="small"
                     icon={<UploadOutlined />}
                     onClick={() =>
-                      handleSelectFile('privateKeyPath', [
+                      void handleSelectFile('privateKeyPath', [
                         { name: 'Private Keys', extensions: ['pem', 'key', 'ppk', 'txt'] },
                       ])
                     }
@@ -662,15 +653,15 @@ const DeviceModal: React.FC<DeviceModalProps> = ({ open, device, onClose, onSucc
                 }
               />
             </Form.Item>
-            <Form.Item label="CA证书(可选)" name="caCertPath">
+            <Form.Item label="CA 证书(可选)" name="caCertPath">
               <Input
-                placeholder="C:\Certs\ca.crt"
+                placeholder="C:\\Certs\\ca.crt"
                 addonAfter={
                   <Button
                     size="small"
                     icon={<UploadOutlined />}
                     onClick={() =>
-                      handleSelectFile('caCertPath', [
+                      void handleSelectFile('caCertPath', [
                         { name: 'Certificates', extensions: ['crt', 'cer', 'pem'] },
                       ])
                     }
@@ -683,7 +674,6 @@ const DeviceModal: React.FC<DeviceModalProps> = ({ open, device, onClose, onSucc
           </>
         )}
 
-        {/* 多因子认证 */}
         {selectedFormAuthType === 'MultiFactor' && (
           <>
             <Form.Item
@@ -694,21 +684,21 @@ const DeviceModal: React.FC<DeviceModalProps> = ({ open, device, onClose, onSucc
               <Input placeholder="admin" />
             </Form.Item>
             <Form.Item
-              label="密码(第一因子)"
+              label="密码(第一因素)"
               name="password"
               rules={[{ required: true, message: '请输入密码' }]}
             >
-              <Input.Password placeholder="••••••••" />
+              <Input.Password />
             </Form.Item>
-            <Form.Item label="私钥(第二因子,可选)" name="privateKeyPath">
+            <Form.Item label="私钥(第二因素, 可选)" name="privateKeyPath">
               <Input
-                placeholder="C:\Users\admin\.ssh\id_rsa"
+                placeholder="C:\\Users\\admin\\.ssh\\id_rsa"
                 addonAfter={
                   <Button
                     size="small"
                     icon={<UploadOutlined />}
                     onClick={() =>
-                      handleSelectFile('privateKeyPath', [
+                      void handleSelectFile('privateKeyPath', [
                         { name: 'Private Keys', extensions: ['pem', 'key', 'ppk', 'txt'] },
                       ])
                     }
@@ -719,9 +709,9 @@ const DeviceModal: React.FC<DeviceModalProps> = ({ open, device, onClose, onSucc
               />
             </Form.Item>
             <Form.Item
-              label="MFA类型"
+              label="MFA 类型"
               name="mfaType"
-              rules={[{ required: true, message: '请选择MFA类型' }]}
+              rules={[{ required: true, message: '请选择 MFA 类型' }]}
             >
               <Select>
                 <Select.Option value="TOTP">TOTP (Google Authenticator)</Select.Option>
@@ -731,7 +721,7 @@ const DeviceModal: React.FC<DeviceModalProps> = ({ open, device, onClose, onSucc
               </Select>
             </Form.Item>
             <Form.Item
-              label="MFA验证码"
+              label="MFA 验证码"
               name="mfaCode"
               rules={[{ required: true, message: '请输入验证码' }]}
             >

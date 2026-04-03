@@ -1,4 +1,4 @@
-# 华为USG防火墙NAT管理软件
+﻿# 华为USG防火墙NAT管理软件
 
 <div align="center">
 
@@ -23,9 +23,7 @@
 
 <div align="center">
 
-![主控制台](https://raw.githubusercontent.com/chengchnegcheng/UsgNat-manager/main/Demo/dashboard.png)
-
-*主控制台 - 实时监控公网IP和设备状态*
+演示稿入口：[`docs/mockups/demo.html`](./docs/mockups/demo.html)
 
 </div>
 
@@ -171,6 +169,7 @@ USG NAT Manager 是一款基于 Electron + React 开发的现代化桌面应用�
 ### 用户安装
 
 1. **下载安装包**
+
    ```
    下载最新版本的安装包: USG-NAT-Manager-Setup-1.0.2.exe
    ```
@@ -194,7 +193,9 @@ cd UsgNat-manager
 ```
 
 #### 2. 安装依赖
+
 7
+
 ```bash
 npm install
 ```
@@ -231,9 +232,10 @@ npm run package
 ```
 
 **打包说明：**
+
 - **Windows**: 生成 NSIS 安装包和 Portable 便携版
 - **macOS**: 生成 DMG 安装包和 ZIP 压缩包，支持 Intel 和 Apple Silicon
-- 详细配置请查看 [MAC_BUILD_GUIDE.md](MAC_BUILD_GUIDE.md)
+- macOS 签名相关配置位于 `package.json` 的 `build.mac` 和 `resources/build/entitlements.mac.plist`
 
 ## 📘 使用指南
 
@@ -305,61 +307,49 @@ npm run package
 ### 项目结构
 
 ```
-USG1.0.2/
+USG1.0.7/
 ├── src/
-│   ├── main/                   # Electron主进程
-│   │   ├── main.ts             # 应用入口
-│   │   ├── preload.ts          # 预加载脚本
-│   │   ├── window.ts           # 窗口管理
-│   │   ├── tray.ts             # 系统托盘
-│   │   ├── ipc/                # IPC通信
-│   │   │   └── index.ts        # IPC处理器
-│   │   └── services/           # 业务服务
-│   │       ├── ip-monitor.ts   # IP监控服务
-│   │       ├── ssh-manager.ts  # SSH连接管理
-│   │       ├── usg-parser.ts   # USG配置解析
-│   │       ├── automation-service.ts  # 自动化服务
-│   │       ├── credential-manager.ts  # 凭据管理
-│   │       ├── backup-service.ts      # 备份服务
-│   │       ├── logger.ts       # 日志服务
-│   │       └── notifier.ts     # 通知服务
-│   └── renderer/               # React渲染进程
-│       ├── App.tsx             # 应用根组件
-│       ├── main.tsx            # 渲染进程入口
-│       ├── pages/              # 页面组件
-│       │   ├── Dashboard/      # 主控制台
-│       │   ├── Devices/        # 设备管理
-│       │   ├── Rules/          # 规则管理
-│       │   ├── Automation/     # 自动化配置
-│       │   ├── Logs/           # 日志监控
-│       │   └── Settings/       # 系统设置
+│   ├── main/                   # Electron 主进程
+│   │   ├── ipc/
+│   │   │   ├── index.ts        # IPC 注册入口
+│   │   │   └── handlers/       # 分领域 handler
+│   │   └── services/           # 自动化、更新、配置等服务
+│   └── renderer/               # React 渲染进程
+│       ├── pages/
+│       │   ├── Automation/
+│       │   │   └── components/
+│       │   ├── Devices/
+│       │   │   └── components/
+│       │   └── Settings/
+│       │       └── components/
 │       ├── components/         # 通用组件
-│       ├── stores/             # 状态管理
-│       │   └── monitor.store.ts
-│       ├── hooks/              # 自定义Hooks
-│       └── types/              # TypeScript类型
-│           └── index.ts
-├── prisma/                     # 数据库
-│   ├── schema.prisma           # 数据模型
-│   └── usg-nat.db              # SQLite数据库（开发环境）
-│                                # 生产环境：%APPDATA%/usg-nat-manager/usg-nat.db
-├── resources/                  # 资源文件
-│   ├── icon.png                # 应用图标
-│   ├── icon.ico                # Windows图标
-│   └── tray-icon.png           # 托盘图标
-├── dist/                       # 编译输出
-├── Demo/                       # 界面效果图
-├── Docs/                       # 项目文档
-│   ├── 产品需求文档.md
-│   ├── 现代化技术架构文档.md
-│   ├── 界面效果图.md
-│   └── icons.md
-├── electron-builder.json       # 打包配置
-├── package.json                # 项目配置
-├── tsconfig.json               # TypeScript配置
-├── vite.config.ts              # Vite配置
-└── README.md                   # 本文档
+│       ├── types/              # 分领域类型导出
+│       └── utils/              # 渲染进程工具函数
+├── prisma/                     # Prisma schema 与数据库
+├── resources/
+│   ├── build/
+│   │   └── entitlements.mac.plist
+│   └── icons/
+├── scripts/
+│   ├── assets/                 # 图标/资源处理脚本
+│   ├── dev/                    # 开发辅助脚本
+│   ├── release/                # 版本与发布脚本
+│   └── setup/
+│       └── github/             # GitHub 初始化脚本
+├── docs/
+│   ├── guides/                 # 使用与发布指南
+│   ├── mockups/                # 演示稿与界面原型
+│   ├── archive/                # 历史方案与归档资料
+│   └── superpowers/            # 整理 spec / plan
+├── .vscode/
+│   └── settings.json           # 工作区视图收口
+├── package.json                # 工程入口与构建脚本
+├── tsconfig*.json              # TypeScript 配置组
+├── vite.config.ts              # Vite 配置
+└── README.md
 ```
+
+根目录保留 `package.json`、`vite.config.ts`、`tsconfig*.json`、`index.html` 这类工具入口是有意的；工作区已通过 `.vscode/settings.json` 把关联配置折叠显示，避免 Explorer 继续散成一片。
 
 ### 核心模块说明
 
@@ -449,7 +439,7 @@ model Config {
 
 ### API文档
 
-详见 [IPC API文档](./Docs/API.md)
+IPC ???? `src/main/ipc/`??????? API ???? `src/main/preload.ts`?
 
 ### 开发命令
 
@@ -497,7 +487,8 @@ npm run format
 
 **问题**: 提示"连接测试失败: 未配置凭据"
 
-**解决**: 
+**解决**:
+
 - 确保已保存设备凭据
 - 检查用户名和密码是否正确
 - 验证防火墙SSH服务是否开启
@@ -507,6 +498,7 @@ npm run format
 **问题**: 提示"所有IP检测源都失败"
 
 **解决**:
+
 - 检查网络连接
 - 确认可以访问外网
 - 查看防火墙是否拦截
@@ -516,6 +508,7 @@ npm run format
 **问题**: 同步规则时出错
 
 **解决**:
+
 - 确认设备在线
 - 检查SSH连接是否正常
 - 验证用户权限是否足够
@@ -525,6 +518,7 @@ npm run format
 **问题**: IP变化后没有自动更新规则
 
 **解决**:
+
 - 检查是否启动了监控
 - 确认自动化配置已启用
 - 查看日志了解详细错误
@@ -534,6 +528,7 @@ npm run format
 **问题**: 双击无反应或闪退
 
 **解决**:
+
 - 查看 `%APPDATA%\usg-nat-manager\logs` 日志
 - 确认系统满足最低要求
 - 尝试以管理员身份运行
@@ -563,6 +558,7 @@ npm run format
 ### v1.0.2 (2025-10-22)
 
 **新增功能**
+
 - ✅ 完整的设备管理功能
 - ✅ NAT规则同步和管理
 - ✅ IP自动监控和更新
@@ -571,6 +567,7 @@ npm run format
 - ✅ 自动化配置
 
 **优化改进**
+
 - ✅ IP检测添加重试机制
 - ✅ 测试连接后自动刷新状态
 - ✅ 添加设备后自动测试连接
@@ -578,6 +575,7 @@ npm run format
 - ✅ Dashboard最近事件显示真实日志
 
 **问题修复**
+
 - ✅ 修复测试连接loading状态BUG
 - ✅ 修复凭据保存顺序问题
 - ✅ 修复SSH错误处理

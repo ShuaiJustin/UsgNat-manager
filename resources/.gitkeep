@@ -1,0 +1,14 @@
+# 资源文件目录
+
+## 已包含的文件：
+- icon.png (应用图标，512x512，来自 Docs/icons/)
+- icon.ico (Windows图标，多尺寸，来自 Docs/icons/)
+- tray-icon.png (托盘图标，32x32，来自 Docs/icons/32x32.png)
+
+## 图标说明：
+这些图标文件用于：
+- icon.png: Electron应用主图标
+- icon.ico: Windows应用图标和任务栏图标
+- tray-icon.png: 系统托盘图标（推荐32x32或16x16）
+
+所有图标均来自 Docs/icons/ 目录

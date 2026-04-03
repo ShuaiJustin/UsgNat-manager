@@ -1,0 +1,161 @@
+import type { ParsedNatRule } from './usg-parser';
+
+type AutomationRuleLike = {
+  id?: string | null;
+  ruleName?: string | null;
+  enabled?: boolean | null;
+  protocol?: string | null;
+  globalIp?: string | null;
+  globalPort?: string | null;
+  insideIp?: string | null;
+  insidePort?: string | null;
+  noReverse?: boolean | null;
+};
+
+type AutomationRulePayloadInput = {
+  ruleName: string;
+  protocol: string;
+  globalIp: string;
+  globalPort: string;
+  insideIp: string;
+  insidePort: string;
+  enabled: boolean;
+  noReverse?: boolean | null;
+};
+
+type AutomationRuleWithIdLike = AutomationRulePayloadInput & {
+  id: string;
+};
+
+const IPV4_PATTERN = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/;
+
+const isValidIPv4 = (ip: string): boolean => {
+  const match = ip.match(IPV4_PATTERN);
+  if (!match) {
+    return false;
+  }
+
+  for (let index = 1; index <= 4; index += 1) {
+    const octet = parseInt(match[index], 10);
+    if (octet < 0 || octet > 255) {
+      return false;
+    }
+  }
+
+  return true;
+};
+
+export const parseScheduledTimeParts = (
+  scheduledTime: string
+): { hour: number; minute: number } | null => {
+  const [hourStr, minuteStr] = scheduledTime.split(':');
+  const hour = parseInt(hourStr, 10);
+  const minute = parseInt(minuteStr, 10);
+
+  if (isNaN(hour) || isNaN(minute) || hour < 0 || hour > 23 || minute < 0 || minute > 59) {
+    return null;
+  }
+
+  return { hour, minute };
+};
+
+export const collectIntegrityCheckIssues = (
+  rules: readonly AutomationRuleLike[],
+  newIP: string
+): string[] => {
+  const issues: string[] = [];
+  const ruleKeys = new Map<string, string[]>();
+
+  for (const rule of rules) {
+    if (!rule.enabled) {
+      continue;
+    }
+
+    const key = `${rule.protocol}:${newIP}:${rule.globalPort}`;
+    if (!ruleKeys.has(key)) {
+      ruleKeys.set(key, []);
+    }
+    ruleKeys.get(key)?.push(rule.ruleName || '未命名规则');
+  }
+
+  for (const [key, ruleNames] of ruleKeys.entries()) {
+    if (ruleNames.length > 1) {
+      issues.push(`规则冲突: ${ruleNames.join(', ')} 使用相同的 ${key}`);
+    }
+  }
+
+  if (!isValidIPv4(newIP)) {
+    issues.push(`IP地址格式无效: ${newIP}`);
+  }
+
+  for (const rule of rules) {
+    if (!rule.enabled) {
+      continue;
+    }
+
+    const globalPort = parseInt(rule.globalPort || '', 10);
+    if (isNaN(globalPort) || globalPort < 1 || globalPort > 65535) {
+      issues.push(`规则 ${rule.ruleName} 端口无效: ${rule.globalPort}`);
+    }
+
+    const insidePort = parseInt(rule.insidePort || '', 10);
+    if (isNaN(insidePort) || insidePort < 1 || insidePort > 65535) {
+      issues.push(`规则 ${rule.ruleName} 内网端口无效: ${rule.insidePort}`);
+    }
+  }
+
+  for (const rule of rules) {
+    if (!rule.enabled) {
+      continue;
+    }
+
+    if (!isValidIPv4(rule.insideIp || '')) {
+      issues.push(`规则 ${rule.ruleName} 内网IP格式无效: ${rule.insideIp}`);
+    }
+  }
+
+  const ruleNameCounts = new Map<string, number>();
+  for (const rule of rules) {
+    if (!rule.ruleName) {
+      continue;
+    }
+    ruleNameCounts.set(rule.ruleName, (ruleNameCounts.get(rule.ruleName) || 0) + 1);
+  }
+
+  for (const [ruleName, count] of ruleNameCounts.entries()) {
+    if (count > 1) {
+      issues.push(`规则名称重复: ${ruleName} (${count}次)`);
+    }
+  }
+
+  return issues;
+};
+
+export const createRuleSnapshots = (
+  rules: readonly AutomationRuleWithIdLike[]
+): AutomationRuleWithIdLike[] =>
+  rules.map((rule) => ({
+    id: rule.id,
+    ruleName: rule.ruleName,
+    protocol: rule.protocol,
+    globalIp: rule.globalIp,
+    globalPort: rule.globalPort,
+    insideIp: rule.insideIp,
+    insidePort: rule.insidePort,
+    enabled: rule.enabled,
+    noReverse: rule.noReverse || false,
+  }));
+
+export const createNatRulePayloads = (
+  rules: readonly AutomationRulePayloadInput[]
+): ParsedNatRule[] =>
+  rules.map((rule) => ({
+    ruleName: rule.ruleName,
+    protocol: rule.protocol as ParsedNatRule['protocol'],
+    globalIp: rule.globalIp,
+    globalPort: rule.globalPort,
+    insideIp: rule.insideIp,
+    insidePort: rule.insidePort,
+    enabled: rule.enabled,
+    noReverse: rule.noReverse || false,
+  }));

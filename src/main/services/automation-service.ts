@@ -10,6 +10,13 @@ import { logger } from './logger';
 import { notifier } from './notifier';
 import { credentialManager } from './credential-manager';
 import { prisma } from './prisma-client';
+import {
+  collectIntegrityCheckIssues,
+  createNatRulePayloads,
+  createRuleSnapshots,
+  parseScheduledTimeParts,
+} from './automation-service-helpers';
+import { DEFAULT_IP_CHECK_SOURCES } from '../ip-check-sources';
 
 /**
  * 自动化配置
@@ -137,11 +144,9 @@ class AutomationService extends EventEmitter {
 
         // 解析定时时间（格式: "HH:mm"）
         try {
-          const [hourStr, minuteStr] = this.config.scheduledTime.split(':');
-          const hour = parseInt(hourStr, 10);
-          const minute = parseInt(minuteStr, 10);
+          const scheduledTimeParts = parseScheduledTimeParts(this.config.scheduledTime);
 
-          if (isNaN(hour) || isNaN(minute) || hour < 0 || hour > 23 || minute < 0 || minute > 59) {
+          if (!scheduledTimeParts) {
             await logger.error('自动更新', `定时时间格式错误: ${this.config.scheduledTime}`);
             return;
           }
@@ -154,8 +159,8 @@ class AutomationService extends EventEmitter {
 
           // 创建新的定时任务规则
           const rule = new schedule.RecurrenceRule();
-          rule.hour = hour;
-          rule.minute = minute;
+          rule.hour = scheduledTimeParts.hour;
+          rule.minute = scheduledTimeParts.minute;
           rule.tz = 'Asia/Shanghai'; // 使用中国时区
 
           // 安排定时任务
@@ -200,9 +205,6 @@ class AutomationService extends EventEmitter {
       });
 
       // 设置超时（30秒），如果用户没有响应，默认取消
-      setTimeout(() => {
-        resolve(false);
-      }, 30000);
     });
   }
 
@@ -302,7 +304,10 @@ class AutomationService extends EventEmitter {
       const result = await sshManager.executeCommand(deviceId, backupCommand);
 
       if (!result.success || !result.output) {
-        await logger.warning('设备备份', `设备 ${deviceName} 备份失败: ${result.error || '无输出'}`);
+        await logger.warning(
+          '设备备份',
+          `设备 ${deviceName} 备份失败: ${result.error || '无输出'}`
+        );
         return null;
       }
 
@@ -366,7 +371,9 @@ class AutomationService extends EventEmitter {
           await fs.unlink(backup.path);
           await logger.info('设备备份', `已删除旧备份: ${backup.name}`);
         } catch (error: any) {
-          await logger.warning('设备备份', `删除备份失败: ${backup.name}`, { error: error.message });
+          await logger.warning('设备备份', `删除备份失败: ${backup.name}`, {
+            error: error.message,
+          });
         }
       }
     } catch (error: any) {
@@ -386,16 +393,7 @@ class AutomationService extends EventEmitter {
       await logger.info('规则回滚', `开始回滚设备 ${deviceName} 的规则`);
 
       // 生成回滚命令（恢复旧规则）
-      const parsedRules = oldRules.map((r) => ({
-        ruleName: r.ruleName,
-        protocol: r.protocol as any,
-        globalIp: r.globalIp,
-        globalPort: r.globalPort,
-        insideIp: r.insideIp,
-        insidePort: r.insidePort,
-        enabled: r.enabled,
-        noReverse: r.noReverse || false,
-      }));
+      const parsedRules = createNatRulePayloads(oldRules);
 
       // 先获取当前设备上的规则，删除所有，然后恢复旧规则
       const currentRulesResult = await sshManager.executeCommand(
@@ -448,7 +446,12 @@ class AutomationService extends EventEmitter {
   /**
    * 验证规则是否生效
    */
-  private async verifyRules(deviceId: string, deviceName: string, newIP: string, expectedCount: number): Promise<boolean> {
+  private async verifyRules(
+    deviceId: string,
+    deviceName: string,
+    newIP: string,
+    expectedCount: number
+  ): Promise<boolean> {
     try {
       const verifyCommand = 'display current-configuration | include nat server';
       const result = await sshManager.executeCommand(deviceId, verifyCommand);
@@ -496,84 +499,36 @@ class AutomationService extends EventEmitter {
     rules: any[],
     newIP: string
   ): Promise<{ success: boolean; issues: string[] }> {
-    const issues: string[] = [];
-
     try {
-      // 1. 检查规则冲突（相同的 global IP + Port + Protocol）
-      const ruleKeys = new Map<string, string[]>();
-      for (const rule of rules) {
-        if (!rule.enabled) continue;
-        const key = `${rule.protocol}:${newIP}:${rule.globalPort}`;
-        if (!ruleKeys.has(key)) {
-          ruleKeys.set(key, []);
-        }
-        ruleKeys.get(key)!.push(rule.ruleName || '未命名规则');
-      }
-
-      for (const [key, ruleNames] of ruleKeys.entries()) {
-        if (ruleNames.length > 1) {
-          issues.push(`规则冲突: ${ruleNames.join(', ')} 使用相同的 ${key}`);
-        }
-      }
-
-      // 2. 检查IP地址格式
-      const ipRegex = /^(\d{1,3}\.){3}\d{1,3}$/;
-      if (!ipRegex.test(newIP)) {
-        issues.push(`IP地址格式无效: ${newIP}`);
-      }
-
-      // 3. 检查端口范围
-      for (const rule of rules) {
-        if (!rule.enabled) continue;
-        const port = parseInt(rule.globalPort);
-        if (isNaN(port) || port < 1 || port > 65535) {
-          issues.push(`规则 ${rule.ruleName} 端口无效: ${rule.globalPort}`);
-        }
-        const insidePort = parseInt(rule.insidePort);
-        if (isNaN(insidePort) || insidePort < 1 || insidePort > 65535) {
-          issues.push(`规则 ${rule.ruleName} 内网端口无效: ${rule.insidePort}`);
-        }
-      }
-
-      // 4. 检查内网IP格式
-      for (const rule of rules) {
-        if (!rule.enabled) continue;
-        if (!ipRegex.test(rule.insideIp)) {
-          issues.push(`规则 ${rule.ruleName} 内网IP格式无效: ${rule.insideIp}`);
-        }
-      }
-
-      // 5. 检查规则名称重复
-      const ruleNames = new Map<string, number>();
-      for (const rule of rules) {
-        if (!rule.ruleName) continue;
-        ruleNames.set(rule.ruleName, (ruleNames.get(rule.ruleName) || 0) + 1);
-      }
-      for (const [name, count] of ruleNames.entries()) {
-        if (count > 1) {
-          issues.push(`规则名称重复: ${name} (${count}次)`);
-        }
-      }
+      const issues = collectIntegrityCheckIssues(rules, newIP);
 
       if (issues.length > 0) {
-        await logger.warning('完整性检查', `设备 ${deviceName} 发现 ${issues.length} 个问题`, {
-          issues,
-        });
+        await logger.warning(
+          'Integrity Check',
+          `Device ${deviceName} has ${issues.length} issues`,
+          {
+            deviceId,
+            issues,
+          }
+        );
         return { success: false, issues };
       }
 
-      await logger.success('完整性检查', `设备 ${deviceName} 完整性检查通过`);
+      await logger.success('Integrity Check', `Device ${deviceName} integrity check passed`, {
+        deviceId,
+      });
       return { success: true, issues: [] };
     } catch (error: any) {
-      await logger.warning('完整性检查', `设备 ${deviceName} 完整性检查失败`, {
+      await logger.warning('Integrity Check', `Device ${deviceName} integrity check failed`, {
+        deviceId,
         error: error.message,
       });
-      return { success: false, issues: [`完整性检查异常: ${error.message}`] };
+      return { success: false, issues: [`Integrity check error: ${error.message}`] };
     }
   }
 
   /**
-   * 更新单个设备的规则
+   * ?????????
    */
   private async updateDeviceRules(deviceId: string, newIP: string): Promise<any> {
     const device = await prisma.device.findUnique({ where: { id: deviceId } });
@@ -608,17 +563,7 @@ class AutomationService extends EventEmitter {
     }
 
     // 保存旧规则状态（用于回滚）
-    const oldRules = rules.map((r) => ({
-      id: r.id,
-      ruleName: r.ruleName,
-      protocol: r.protocol,
-      globalIp: r.globalIp,
-      globalPort: r.globalPort,
-      insideIp: r.insideIp,
-      insidePort: r.insidePort,
-      enabled: r.enabled,
-      noReverse: r.noReverse || false,
-    }));
+    const oldRules = createRuleSnapshots(rules);
 
     // 连接设备
     await sshManager.connect(deviceId, {
@@ -630,7 +575,6 @@ class AutomationService extends EventEmitter {
     });
 
     let backupPath: string | null = null;
-    let updateSuccess = false;
 
     try {
       // 1. 完整性检查（如果启用）
@@ -653,16 +597,7 @@ class AutomationService extends EventEmitter {
       }
 
       // 3. 生成更新命令（先验证命令序列）
-      const parsedRules = rules.map((r) => ({
-        ruleName: r.ruleName,
-        protocol: r.protocol as any,
-        globalIp: r.globalIp,
-        globalPort: r.globalPort,
-        insideIp: r.insideIp,
-        insidePort: r.insidePort,
-        enabled: r.enabled,
-        noReverse: r.noReverse || false,
-      }));
+      const parsedRules = createNatRulePayloads(rules);
 
       const commands = usgParser.generateBatchUpdateIPCommands(parsedRules, newIP);
 
@@ -678,8 +613,6 @@ class AutomationService extends EventEmitter {
       if (!executeResult.success) {
         throw new Error(`命令执行失败: ${executeResult.error || '未知错误'}`);
       }
-
-      updateSuccess = true;
 
       // 5. 更新数据库（在设备更新成功后）
       await prisma.natRule.updateMany({
@@ -701,7 +634,6 @@ class AutomationService extends EventEmitter {
 
       return { success: true, updated: rules.length, backupPath };
     } catch (error: any) {
-      updateSuccess = false;
       await logger.error('规则更新', `设备 ${device.name} 更新失败`, {
         error: error.message,
       });
@@ -741,7 +673,7 @@ class AutomationService extends EventEmitter {
       ipMonitor.updateConfig({
         checkInterval: this.config.checkInterval || 5,
         confirmCount: this.config.confirmCount || 3,
-        sources: this.config.checkSources || ['ip.sb', 'ipip', 'cip.cc'],
+        sources: this.config.checkSources || [...DEFAULT_IP_CHECK_SOURCES],
       });
       await logger.info('自动化服务', 'IP监控配置已更新', {
         checkInterval: this.config.checkInterval,
@@ -789,7 +721,11 @@ class AutomationService extends EventEmitter {
     this.config = { ...this.config, ...config };
 
     // 同步更新IP监控配置
-    if (config.checkInterval !== undefined || config.confirmCount !== undefined || config.checkSources !== undefined) {
+    if (
+      config.checkInterval !== undefined ||
+      config.confirmCount !== undefined ||
+      config.checkSources !== undefined
+    ) {
       const ipMonitorConfig: any = {};
 
       if (config.checkInterval !== undefined) {
@@ -823,7 +759,10 @@ class AutomationService extends EventEmitter {
       if (this.config.triggerType === 'scheduled' && this.config.scheduledTime && this.pendingIP) {
         this.rescheduleTask(this.config.scheduledTime, this.pendingIP);
       }
-    } else if (config.scheduledTime !== undefined && config.scheduledTime !== oldConfig.scheduledTime) {
+    } else if (
+      config.scheduledTime !== undefined &&
+      config.scheduledTime !== oldConfig.scheduledTime
+    ) {
       // 仅定时时间改变，重新安排任务
       if (this.config.triggerType === 'scheduled' && this.config.scheduledTime) {
         if (this.scheduledJob) {
@@ -842,18 +781,16 @@ class AutomationService extends EventEmitter {
    */
   private rescheduleTask(scheduledTime: string, pendingIP: string) {
     try {
-      const [hourStr, minuteStr] = scheduledTime.split(':');
-      const hour = parseInt(hourStr, 10);
-      const minute = parseInt(minuteStr, 10);
+      const scheduledTimeParts = parseScheduledTimeParts(scheduledTime);
 
-      if (isNaN(hour) || isNaN(minute) || hour < 0 || hour > 23 || minute < 0 || minute > 59) {
+      if (!scheduledTimeParts) {
         logger.error('自动更新', `定时时间格式错误: ${scheduledTime}`).catch(() => {});
         return;
       }
 
       const rule = new schedule.RecurrenceRule();
-      rule.hour = hour;
-      rule.minute = minute;
+      rule.hour = scheduledTimeParts.hour;
+      rule.minute = scheduledTimeParts.minute;
       rule.tz = 'Asia/Shanghai';
 
       this.scheduledJob = schedule.scheduleJob(rule, async () => {
@@ -869,9 +806,11 @@ class AutomationService extends EventEmitter {
         }
       });
 
-      logger.success('自动更新', `定时任务已更新，每天 ${scheduledTime} 执行`, { pendingIP }).catch((err) => {
-        console.error('记录日志失败:', err);
-      });
+      logger
+        .success('自动更新', `定时任务已更新，每天 ${scheduledTime} 执行`, { pendingIP })
+        .catch((err) => {
+          console.error('记录日志失败:', err);
+        });
     } catch (error: any) {
       logger.error('自动更新', '重新安排定时任务失败', { error: error.message }).catch((err) => {
         console.error('记录日志失败:', err);

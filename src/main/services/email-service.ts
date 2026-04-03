@@ -1,5 +1,12 @@
 import { app } from 'electron';
 import nodemailer from 'nodemailer';
+import {
+  createBaseTransportConfig,
+  createTestTransportConfig,
+  getEmailErrorInfo,
+  getSMTPConfigValidationError,
+  normalizeNotifyTypes,
+} from './email-service-helpers';
 import { logger } from './logger';
 
 /**
@@ -57,23 +64,13 @@ class EmailService {
    * 配置SMTP
    */
   configure(config: SMTPConfig) {
-    this.config = config;
+    this.config = {
+      ...config,
+      notifyTypes: normalizeNotifyTypes(config.notifyTypes),
+    };
 
-    // 如果未指定通知类型，默认启用所有类型
-    if (!this.config.notifyTypes || this.config.notifyTypes.length === 0) {
-      this.config.notifyTypes = ['ipChange', 'updateSuccess', 'updateFailed', 'deviceOffline', 'dailyReport'];
-    }
-
-    if (config.enabled) {
-      this.transporter = nodemailer.createTransport({
-        host: config.host,
-        port: config.port,
-        secure: config.secure,
-        auth: {
-          user: config.auth.user,
-          pass: config.auth.pass,
-        },
-      });
+    if (this.config.enabled) {
+      this.transporter = nodemailer.createTransport(createBaseTransportConfig(this.config));
     } else {
       this.transporter = null;
     }
@@ -118,9 +115,10 @@ class EmailService {
         messageId: info.messageId,
       });
       return true;
-    } catch (error: any) {
+    } catch (error: unknown) {
+      const { message } = getEmailErrorInfo(error);
       await logger.error('邮件服务', '邮件发送失败', {
-        error: error.message,
+        error: message,
         subject: options.subject,
       });
       return false;
@@ -150,41 +148,10 @@ class EmailService {
    * 使用临时配置发送测试邮件（不保存配置）
    */
   async sendTestEmailWithConfig(config: SMTPConfig): Promise<boolean> {
-    // 验证配置
-    if (!config.enabled) {
-      const error = '邮件通知未启用';
-      await logger.warning('邮件服务', error);
-      throw new Error(error);
-    }
-
-    if (!config.host) {
-      const error = 'SMTP 服务器地址不能为空';
-      await logger.warning('邮件服务', error);
-      throw new Error(error);
-    }
-
-    if (!config.auth?.user) {
-      const error = 'SMTP 用户名不能为空';
-      await logger.warning('邮件服务', error);
-      throw new Error(error);
-    }
-
-    if (!config.auth?.pass) {
-      const error = 'SMTP 密码不能为空';
-      await logger.warning('邮件服务', error);
-      throw new Error(error);
-    }
-
-    if (!config.from?.address) {
-      const error = '发件人邮箱不能为空';
-      await logger.warning('邮件服务', error);
-      throw new Error(error);
-    }
-
-    if (!config.to || config.to.length === 0) {
-      const error = '收件人邮箱不能为空';
-      await logger.warning('邮件服务', error);
-      throw new Error(error);
+    const validationError = getSMTPConfigValidationError(config);
+    if (validationError) {
+      await logger.warning('邮件服务', validationError);
+      throw new Error(validationError);
     }
 
     try {
@@ -197,34 +164,19 @@ class EmailService {
       });
 
       // 创建临时的邮件传输器
-      const transportConfig = {
-        host: config.host,
-        port: config.port,
-        secure: config.secure, // true for 465, false for other ports
-        auth: {
-          user: config.auth.user,
-          pass: config.auth.pass,
-        },
-        // 增加超时和调试选项
-        connectionTimeout: 10000, // 10秒连接超时
-        greetingTimeout: 10000, // 10秒问候超时
-        socketTimeout: 10000, // 10秒socket超时
-        logger: false, // 不输出详细日志
-        debug: false, // 不开启调试模式
-      };
-
-      const transporter = nodemailer.createTransport(transportConfig);
+      const transporter = nodemailer.createTransport(createTestTransportConfig(config));
 
       // 验证连接
       await logger.info('邮件服务', '验证 SMTP 连接...');
       try {
         await transporter.verify();
         await logger.success('邮件服务', 'SMTP 连接验证成功');
-      } catch (verifyError: any) {
+      } catch (verifyError: unknown) {
+        const { message } = getEmailErrorInfo(verifyError);
         await logger.error('邮件服务', 'SMTP 连接验证失败', {
-          error: verifyError.message,
+          error: message,
         });
-        throw new Error(`SMTP 连接失败: ${verifyError.message}`);
+        throw new Error(`SMTP 连接失败: ${message}`);
       }
 
       // 构建邮件内容
@@ -320,12 +272,12 @@ class EmailService {
       });
 
       return true;
-    } catch (error: any) {
-      const errorMessage = error.message || '未知错误';
+    } catch (error: unknown) {
+      const { message: errorMessage, code, command } = getEmailErrorInfo(error);
       const errorDetails = {
         error: errorMessage,
-        code: error.code,
-        command: error.command,
+        code,
+        command,
         host: config.host,
         port: config.port,
       };
@@ -577,20 +529,13 @@ class EmailService {
    */
   async verifyConfig(config: SMTPConfig): Promise<boolean> {
     try {
-      const transporter = nodemailer.createTransport({
-        host: config.host,
-        port: config.port,
-        secure: config.secure,
-        auth: {
-          user: config.auth.user,
-          pass: config.auth.pass,
-        },
-      });
+      const transporter = nodemailer.createTransport(createBaseTransportConfig(config));
 
       await transporter.verify();
       return true;
-    } catch (error: any) {
-      await logger.error('邮件服务', 'SMTP配置验证失败', { error: error.message });
+    } catch (error: unknown) {
+      const { message } = getEmailErrorInfo(error);
+      await logger.error('邮件服务', 'SMTP配置验证失败', { error: message });
       return false;
     }
   }

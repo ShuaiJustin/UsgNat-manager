@@ -1,6 +1,7 @@
 import React, { useEffect } from 'react';
-import { Modal, Form, Input, Select, Switch, App } from 'antd';
+import { App, Form, Input, Modal, Select, Switch } from 'antd';
 import { useMutation } from '@tanstack/react-query';
+
 import type { NatRule } from '@/types';
 
 interface RuleModalProps {
@@ -11,24 +12,32 @@ interface RuleModalProps {
   onSuccess: () => void;
 }
 
+type RuleDraft = Partial<NatRule>;
+
+type RuleUpdatePayload = {
+  id: string;
+  values: RuleDraft;
+};
+
 const RuleModal: React.FC<RuleModalProps> = ({ open, rule, deviceId, onClose, onSuccess }) => {
   const { message } = App.useApp();
   const [form] = Form.useForm();
   const isEdit = !!rule;
 
   useEffect(() => {
-    if (open) {
-      if (rule) {
-        form.setFieldsValue(rule);
-      } else {
-        form.resetFields();
-      }
+    if (!open) {
+      return;
+    }
+
+    if (rule) {
+      form.setFieldsValue(rule);
+    } else {
+      form.resetFields();
     }
   }, [open, rule, form]);
 
-  // 创建规则
   const createMutation = useMutation({
-    mutationFn: (values: any) => window.electronAPI.rule.create(deviceId, values),
+    mutationFn: (values: RuleDraft) => window.electronAPI.rule.create(deviceId, values),
     onSuccess: () => {
       message.success('规则创建成功');
       onSuccess();
@@ -39,10 +48,8 @@ const RuleModal: React.FC<RuleModalProps> = ({ open, rule, deviceId, onClose, on
     },
   });
 
-  // 更新规则
   const updateMutation = useMutation({
-    mutationFn: ({ id, values }: { id: string; values: any }) =>
-      window.electronAPI.rule.update(id, values),
+    mutationFn: ({ id, values }: RuleUpdatePayload) => window.electronAPI.rule.update(id, values),
     onSuccess: () => {
       message.success('规则更新成功');
       onSuccess();
@@ -55,7 +62,7 @@ const RuleModal: React.FC<RuleModalProps> = ({ open, rule, deviceId, onClose, on
 
   const handleSubmit = async () => {
     try {
-      const values = await form.validateFields();
+      const values = (await form.validateFields()) as RuleDraft;
       if (isEdit && rule) {
         updateMutation.mutate({ id: rule.id, values });
       } else {
@@ -70,7 +77,7 @@ const RuleModal: React.FC<RuleModalProps> = ({ open, rule, deviceId, onClose, on
     <Modal
       title={isEdit ? '编辑规则' : '新增规则'}
       open={open}
-      onOk={handleSubmit}
+      onOk={() => void handleSubmit()}
       onCancel={onClose}
       confirmLoading={createMutation.isPending || updateMutation.isPending}
       width={600}
@@ -103,21 +110,26 @@ const RuleModal: React.FC<RuleModalProps> = ({ open, rule, deviceId, onClose, on
 
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
           <Form.Item
-            label="全局IP"
+            label="全局 IP"
             name="globalIp"
             rules={[
-              { required: true, message: '请输入全局IP' },
+              { required: true, message: '请输入全局 IP' },
               {
-                validator: (_, value) => {
-                  if (!value) return Promise.resolve();
+                validator: (_, value: string) => {
+                  if (!value) {
+                    return Promise.resolve();
+                  }
+
                   const ipPattern = /^(\d{1,3}\.){3}\d{1,3}$/;
                   if (!ipPattern.test(value)) {
-                    return Promise.reject(new Error('请输入有效的IP地址'));
+                    return Promise.reject(new Error('请输入有效的 IP 地址'));
                   }
+
                   const parts = value.split('.').map(Number);
-                  if (parts.some((part: number) => part < 0 || part > 255)) {
-                    return Promise.reject(new Error('IP地址段必须在0-255之间'));
+                  if (parts.some((part) => part < 0 || part > 255)) {
+                    return Promise.reject(new Error('IP 地址段必须在 0-255 之间'));
                   }
+
                   return Promise.resolve();
                 },
               },
@@ -132,12 +144,16 @@ const RuleModal: React.FC<RuleModalProps> = ({ open, rule, deviceId, onClose, on
             rules={[
               { required: true, message: '请输入全局端口' },
               {
-                validator: (_, value) => {
-                  if (!value) return Promise.resolve();
-                  const port = Number(value);
-                  if (isNaN(port) || port < 1 || port > 65535) {
-                    return Promise.reject(new Error('端口必须在1-65535之间'));
+                validator: (_, value: string) => {
+                  if (!value) {
+                    return Promise.resolve();
                   }
+
+                  const port = Number(value);
+                  if (Number.isNaN(port) || port < 1 || port > 65535) {
+                    return Promise.reject(new Error('端口必须在 1-65535 之间'));
+                  }
+
                   return Promise.resolve();
                 },
               },
@@ -149,21 +165,26 @@ const RuleModal: React.FC<RuleModalProps> = ({ open, rule, deviceId, onClose, on
 
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
           <Form.Item
-            label="内部IP"
+            label="内部 IP"
             name="insideIp"
             rules={[
-              { required: true, message: '请输入内部IP' },
+              { required: true, message: '请输入内部 IP' },
               {
-                validator: (_, value) => {
-                  if (!value) return Promise.resolve();
+                validator: (_, value: string) => {
+                  if (!value) {
+                    return Promise.resolve();
+                  }
+
                   const ipPattern = /^(\d{1,3}\.){3}\d{1,3}$/;
                   if (!ipPattern.test(value)) {
-                    return Promise.reject(new Error('请输入有效的IP地址'));
+                    return Promise.reject(new Error('请输入有效的 IP 地址'));
                   }
+
                   const parts = value.split('.').map(Number);
-                  if (parts.some((part: number) => part < 0 || part > 255)) {
-                    return Promise.reject(new Error('IP地址段必须在0-255之间'));
+                  if (parts.some((part) => part < 0 || part > 255)) {
+                    return Promise.reject(new Error('IP 地址段必须在 0-255 之间'));
                   }
+
                   return Promise.resolve();
                 },
               },
@@ -178,12 +199,16 @@ const RuleModal: React.FC<RuleModalProps> = ({ open, rule, deviceId, onClose, on
             rules={[
               { required: true, message: '请输入内部端口' },
               {
-                validator: (_, value) => {
-                  if (!value) return Promise.resolve();
-                  const port = Number(value);
-                  if (isNaN(port) || port < 1 || port > 65535) {
-                    return Promise.reject(new Error('端口必须在1-65535之间'));
+                validator: (_, value: string) => {
+                  if (!value) {
+                    return Promise.resolve();
                   }
+
+                  const port = Number(value);
+                  if (Number.isNaN(port) || port < 1 || port > 65535) {
+                    return Promise.reject(new Error('端口必须在 1-65535 之间'));
+                  }
+
                   return Promise.resolve();
                 },
               },
@@ -194,7 +219,7 @@ const RuleModal: React.FC<RuleModalProps> = ({ open, rule, deviceId, onClose, on
         </div>
 
         <Form.Item label="描述" name="description">
-          <Input.TextArea rows={3} placeholder="规则描述信息（可选）" />
+          <Input.TextArea rows={3} placeholder="规则描述信息，可选" />
         </Form.Item>
 
         <Form.Item label="启用规则" name="enabled" valuePropName="checked">

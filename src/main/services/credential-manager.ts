@@ -26,6 +26,8 @@ export interface Credential {
   mfaSecret?: string;
 }
 
+type MfaType = Credential['mfaType'];
+
 /**
  * 凭据管理器
  * 负责安全地存储和检索设备凭据
@@ -99,7 +101,7 @@ class CredentialManager {
   async saveCredential(credential: Credential): Promise<void> {
     // 确保加密密钥已初始化
     await this.ensureKeyInitialized();
-    
+
     // 加密敏感信息
     const encryptedPassword = credential.password ? this.encrypt(credential.password) : undefined;
     // TODO: 如需支持 passphrase 和 MFA，可在此处加密
@@ -151,7 +153,7 @@ class CredentialManager {
   async getCredential(deviceId: string): Promise<Credential | null> {
     // 确保加密密钥已初始化
     await this.ensureKeyInitialized();
-    
+
     const credentialRef = await prisma.credentialRef.findUnique({
       where: { deviceId },
     });
@@ -170,7 +172,7 @@ class CredentialManager {
       password,
       privateKey: credentialRef.privateKey || undefined,
       certificate: credentialRef.certificate || undefined,
-      mfaType: credentialRef.mfaType as any,
+      mfaType: credentialRef.mfaType as MfaType,
     };
   }
 
@@ -199,7 +201,7 @@ class CredentialManager {
   async updatePassword(deviceId: string, newPassword: string): Promise<void> {
     // 确保加密密钥已初始化
     await this.ensureKeyInitialized();
-    
+
     const encryptedPassword = this.encrypt(newPassword);
     await prisma.credentialRef.update({
       where: { deviceId },

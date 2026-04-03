@@ -3,19 +3,17 @@ import { Alert, Button } from 'antd';
 
 interface State {
   hasError: boolean;
-  error?: any;
+  error?: Error;
 }
 
 class ErrorBoundary extends React.Component<React.PropsWithChildren, State> {
   state: State = { hasError: false };
 
-  static getDerivedStateFromError(error: any): State {
+  static getDerivedStateFromError(error: Error): State {
     return { hasError: true, error };
   }
 
-  componentDidCatch(error: any, errorInfo: any) {
-    // 这里记录到控制台，便于快速定位
-    // 注意：生产环境可接入到日志系统
+  componentDidCatch(error: Error, errorInfo: React.ErrorInfo) {
     console.error('渲染错误:', error, errorInfo);
   }
 
@@ -33,7 +31,7 @@ class ErrorBoundary extends React.Component<React.PropsWithChildren, State> {
             description={
               <div>
                 <div style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>
-                  {String(this.state.error?.message || this.state.error || '未知错误')}
+                  {this.state.error?.message || '未知错误'}
                 </div>
                 <div style={{ marginTop: 12 }}>
                   <Button type="primary" onClick={this.handleReload}>
@@ -48,7 +46,8 @@ class ErrorBoundary extends React.Component<React.PropsWithChildren, State> {
         </div>
       );
     }
-    return this.props.children as any;
+
+    return this.props.children ?? null;
   }
 }
 

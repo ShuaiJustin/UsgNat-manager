@@ -1,5 +1,5 @@
 # Logs
-logs
+/logs/
 *.log
 npm-debug.log*
 yarn-debug.log*
@@ -21,6 +21,7 @@ build
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
+!.vscode/settings.json
 .idea
 .DS_Store
 *.suo
@@ -43,8 +44,11 @@ prisma/migrations
 .env.*.local
 
 # 不需要上传的目录
-Demo/
-Docs/
 resources/
-USG Server Updates/
+!resources/
+resources/*
+!resources/.gitkeep
+!resources/build/
+resources/build/*
+!resources/build/entitlements.mac.plist
 .claude/

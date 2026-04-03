@@ -1,38 +1,45 @@
-import { BrowserWindow, app } from 'electron';
+﻿import { BrowserWindow, app } from 'electron';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as https from 'https';
 import * as http from 'http';
 import * as crypto from 'crypto';
-import * as os from 'os';
 import { spawn } from 'child_process';
+import { URL } from 'node:url';
 import { logger } from './logger';
 import { configService } from './config-service';
 import { backupService } from './backup-service';
+import {
+  buildLatestVersionApiUrl,
+  compareVersions,
+  createSetupInstallerFileName,
+  getUpdateCheckIntervalMs,
+  resolveUpdateAssetUrl,
+} from './custom-updater-helpers';
 
 /**
  * 自定义更新服务
- * 
+ *
  * 使用 RESTful API 获取版本信息
  */
 class CustomUpdater {
   private mainWindow: BrowserWindow | null = null;
   private isChecking = false;
   private isDownloading = false;
-  
+
   // API 服务器地址
   // 注意：仅使用公网可访问的服务器地址
   // 如需配置备用服务器，请添加公网域名或IP，不要使用内网地址（如 192.168.x.x）
   private updateServerUrls = [
-    'http://shcrystal.top:8123',      // 主服务器
+    'http://shcrystal.top:8123', // 主服务器
     // 备用服务器示例（请替换为实际的公网地址）：
     // 'https://update-backup.yourdomain.com',
     // 'https://cdn.example.com/updates',
   ];
-  
+
   private downloadedFilePath: string | null = null;
   private latestVersionInfo: any = null;
-  private periodicCheckTimer: NodeJS.Timeout | null = null;
+  private periodicCheckTimer: ReturnType<typeof setInterval> | null = null;
   private lastCheckTime: number = 0;
   private downloadRetryCount = 0;
   private maxRetries = 3;
@@ -69,17 +76,13 @@ class CustomUpdater {
       return;
     }
 
-    const intervals: Record<string, number> = {
-      daily: 24 * 60 * 60 * 1000,
-      weekly: 7 * 24 * 60 * 60 * 1000,
-    };
-    const interval = intervals[checkFrequency] || intervals.daily;
+    const interval = getUpdateCheckIntervalMs(checkFrequency);
 
     await logger.info('自动更新', `启动定期检查，间隔: ${checkFrequency}`, { interval });
 
     // 计算下次检查时间（如果从未检查过，则立即检查）
     const now = Date.now();
-    const timeSinceLastCheck = this.lastCheckTime === 0 ? interval : (now - this.lastCheckTime);
+    const timeSinceLastCheck = this.lastCheckTime === 0 ? interval : now - this.lastCheckTime;
     const shouldCheckNow = this.lastCheckTime === 0 || timeSinceLastCheck >= interval;
 
     // 如果应该立即检查，则执行一次检查
@@ -90,7 +93,10 @@ class CustomUpdater {
     } else {
       // 计算距离下次检查的剩余时间
       const timeUntilNextCheck = interval - timeSinceLastCheck;
-      await logger.info('自动更新', `距离下次检查还有 ${Math.round(timeUntilNextCheck / 1000 / 60)} 分钟`);
+      await logger.info(
+        '自动更新',
+        `距离下次检查还有 ${Math.round(timeUntilNextCheck / 1000 / 60)} 分钟`
+      );
     }
 
     // 使用最小检查间隔（1小时）作为定时器间隔，避免长时间等待
@@ -99,7 +105,7 @@ class CustomUpdater {
     this.periodicCheckTimer = setInterval(async () => {
       const currentTime = Date.now();
       const timeSinceLastCheck = currentTime - this.lastCheckTime;
-      
+
       // 如果距离上次检查已经超过配置的间隔时间，则执行检查
       if (timeSinceLastCheck >= interval) {
         await logger.info('自动更新', '执行定期检查更新');
@@ -166,7 +172,7 @@ class CustomUpdater {
       const latestVersion = versionInfo.version;
 
       // 比较版本号
-      if (this.compareVersions(currentVersion, latestVersion) >= 0) {
+      if (compareVersions(currentVersion, latestVersion) >= 0) {
         this.sendMessage('update-not-available', { version: currentVersion });
 
         if (showNoUpdateMessage) {
@@ -251,16 +257,16 @@ class CustomUpdater {
    */
   private async fetchFromServer(serverUrl: string): Promise<any> {
     const currentVersion = app.getVersion();
-    
+
     // API 端点
-    const apiUrl = `${serverUrl}/api/versions/latest`;
-    
+    const apiUrl = buildLatestVersionApiUrl(serverUrl);
+
     // 调试日志
     logger.info('自动更新', `请求更新服务器: ${apiUrl}`, {
       method: 'GET',
-      currentVersion
+      currentVersion,
     });
-    
+
     return new Promise((resolve, reject) => {
       const parsedUrl = new URL(apiUrl);
       const options = {
@@ -269,52 +275,52 @@ class CustomUpdater {
         path: parsedUrl.pathname,
         method: 'GET',
         headers: {
-          'User-Agent': `USG-NAT-Manager/${currentVersion}`
+          'User-Agent': `USG-NAT-Manager/${currentVersion}`,
         },
-        timeout: 10000
+        timeout: 10000,
       };
-      
+
       const client = parsedUrl.protocol === 'https:' ? https : http;
-      
+
       const req = client.request(options, (res) => {
         if (res.statusCode !== 200) {
           logger.error('自动更新', `HTTP错误: ${res.statusCode}`, {
             url: apiUrl,
             statusCode: res.statusCode,
-            statusMessage: res.statusMessage
+            statusMessage: res.statusMessage,
           });
           reject(new Error(`服务器返回错误: ${res.statusCode}`));
           return;
         }
-        
+
         let data = '';
         res.on('data', (chunk) => {
           data += chunk;
         });
-        
+
         res.on('end', () => {
           try {
             const versionInfo = JSON.parse(data);
-            
+
             // 保存服务器地址用于后续下载
             versionInfo._serverUrl = serverUrl;
-            
+
             resolve(versionInfo);
-          } catch (error) {
+          } catch {
             reject(new Error('解析版本信息失败'));
           }
         });
       });
-      
+
       req.on('error', (error) => {
         reject(error);
       });
-      
+
       req.on('timeout', () => {
         req.destroy();
         reject(new Error('请求超时'));
       });
-      
+
       req.end();
     });
   }
@@ -370,19 +376,12 @@ class CustomUpdater {
         }
 
         // 构建下载地址
-        let downloadUrl: string;
-        if (fullFile.url.startsWith('http://') || fullFile.url.startsWith('https://')) {
-          // 完整 URL，直接使用
-          downloadUrl = fullFile.url;
-        } else {
-          // 相对路径，拼接服务器地址
-          const serverUrl = versionInfo._serverUrl || this.updateServerUrls[0];
-          downloadUrl = `${serverUrl}${fullFile.url}`;
-        }
+        const serverUrl = versionInfo._serverUrl || this.updateServerUrls[0];
+        const downloadUrl = resolveUpdateAssetUrl(fullFile.url, serverUrl);
 
         const tempDir = app.getPath('temp');
         // 使用版本号构建文件名，确保有正确的扩展名
-        const fileName = `USG-NAT-Manager-Setup-${versionInfo.version}.exe`;
+        const fileName = createSetupInstallerFileName(versionInfo.version);
         const filePath = path.join(tempDir, fileName);
 
         await this.downloadFile(downloadUrl, filePath);
@@ -407,18 +406,18 @@ class CustomUpdater {
         if (versionInfo.sha256) {
           logger.info('自动更新', '正在校验文件完整性...');
           const fileHash = await this.calculateSHA256(filePath);
-          
+
           if (fileHash.toLowerCase() !== versionInfo.sha256.toLowerCase()) {
             // 确保删除前文件未被占用
-            await new Promise(resolve => setTimeout(resolve, 100));
+            await new Promise((resolve) => setTimeout(resolve, 100));
             try {
               fs.unlinkSync(filePath);
-            } catch (err) {
+            } catch {
               logger.warning('自动更新', '删除校验失败的文件失败', { path: filePath });
             }
             throw new Error('文件校验失败，SHA256不匹配');
           }
-          
+
           logger.success('自动更新', '文件完整性校验通过');
         }
 
@@ -481,7 +480,7 @@ class CustomUpdater {
    */
   private downloadFile(url: string, filePath: string, redirectCount = 0): Promise<void> {
     const maxRedirects = 5;
-    
+
     return new Promise((resolve, reject) => {
       const client = url.startsWith('https') ? https : http;
       const file = fs.createWriteStream(filePath);
@@ -495,19 +494,24 @@ class CustomUpdater {
             if (fs.existsSync(filePath)) {
               try {
                 fs.unlinkSync(filePath);
-              } catch (err) {
+              } catch {
                 logger.warning('自动更新', '清理临时文件失败', { path: filePath });
               }
             }
           }, 100);
-        } catch (err) {
+        } catch {
           // 忽略关闭错误
         }
       };
 
       const req = client.get(url, (res) => {
         // 处理重定向
-        if (res.statusCode === 301 || res.statusCode === 302 || res.statusCode === 307 || res.statusCode === 308) {
+        if (
+          res.statusCode === 301 ||
+          res.statusCode === 302 ||
+          res.statusCode === 307 ||
+          res.statusCode === 308
+        ) {
           const redirectLocation = res.headers.location;
           if (!redirectLocation) {
             cleanup();
@@ -524,14 +528,7 @@ class CustomUpdater {
           // 将相对路径转换为绝对URL
           let redirectUrl: string;
           try {
-            // 如果已经是完整URL，直接使用
-            if (redirectLocation.startsWith('http://') || redirectLocation.startsWith('https://')) {
-              redirectUrl = redirectLocation;
-            } else {
-              // 相对路径，基于当前URL解析为绝对URL
-              const baseUrl = new URL(url);
-              redirectUrl = new URL(redirectLocation, baseUrl).href;
-            }
+            redirectUrl = resolveUpdateAssetUrl(redirectLocation, url);
           } catch (error: any) {
             cleanup();
             reject(new Error(`解析重定向URL失败: ${error.message}`));
@@ -562,7 +559,7 @@ class CustomUpdater {
 
         res.on('data', (chunk) => {
           downloadedSize += chunk.length;
-          
+
           if (!file.write(chunk)) {
             // 背压处理：暂停读取直到缓冲区排空
             res.pause();
@@ -631,9 +628,7 @@ class CustomUpdater {
       // 安装前自动创建备份
       await logger.info('自动更新', '正在创建更新前备份...');
       const currentVersion = this.getCurrentVersion();
-      const backupInfo = await backupService.createBackup(
-        `更新前自动备份 (v${currentVersion})`
-      );
+      const backupInfo = await backupService.createBackup(`更新前自动备份 (v${currentVersion})`);
 
       await logger.success('自动更新', '备份创建成功', {
         filename: backupInfo.filename,
@@ -651,7 +646,7 @@ class CustomUpdater {
     try {
       // 在 Windows 上，确保路径被正确处理
       const installerPath = this.downloadedFilePath;
-      
+
       // 检查文件是否存在且可执行
       if (!fs.existsSync(installerPath)) {
         throw new Error(`安装程序文件不存在: ${installerPath}`);
@@ -663,16 +658,16 @@ class CustomUpdater {
         shell: true,
         windowsVerbatimArguments: false,
       });
-      
+
       // 监听错误事件
       installer.on('error', (error) => {
         logger.error('自动更新', '安装程序启动错误', { error: error.message }).catch(() => {});
       });
-      
+
       installer.unref(); // 允许父进程退出
-      
+
       await logger.success('自动更新', '安装程序已启动', { path: installerPath });
-      
+
       // 等待一小段时间确保安装程序启动
       setTimeout(() => {
         app.quit();
@@ -681,23 +676,6 @@ class CustomUpdater {
       await logger.error('自动更新', '启动安装程序失败', { error: error.message });
       throw new Error(`启动安装程序失败: ${error.message}`);
     }
-  }
-
-  /**
-   * 比较版本号
-   */
-  private compareVersions(v1: string, v2: string): number {
-    const parts1 = v1.split('.').map(Number);
-    const parts2 = v2.split('.').map(Number);
-    const maxLength = Math.max(parts1.length, parts2.length);
-
-    for (let i = 0; i < maxLength; i++) {
-      const num1 = parts1[i] || 0;
-      const num2 = parts2[i] || 0;
-      if (num1 > num2) return 1;
-      if (num1 < num2) return -1;
-    }
-    return 0;
   }
 
   /**
@@ -723,7 +701,7 @@ class CustomUpdater {
       let cleanedCount = 0;
 
       for (const file of files) {
-        const isInstaller = installerPatterns.some(pattern => pattern.test(file));
+        const isInstaller = installerPatterns.some((pattern) => pattern.test(file));
 
         if (isInstaller) {
           const filePath = path.join(tempDir, file);
@@ -755,13 +733,8 @@ class CustomUpdater {
     const asarInfo = versionInfo.files.asar;
 
     // 构建下载地址
-    let downloadUrl: string;
-    if (asarInfo.url.startsWith('http://') || asarInfo.url.startsWith('https://')) {
-      downloadUrl = asarInfo.url;
-    } else {
-      const serverUrl = versionInfo._serverUrl || this.updateServerUrls[0];
-      downloadUrl = `${serverUrl}${asarInfo.url}`;
-    }
+    const serverUrl = versionInfo._serverUrl || this.updateServerUrls[0];
+    const downloadUrl = resolveUpdateAssetUrl(asarInfo.url, serverUrl);
 
     const tempDir = app.getPath('temp');
     const asarTempPath = path.join(tempDir, `app-${versionInfo.version}.asar`);
@@ -819,4 +792,3 @@ class CustomUpdater {
 }
 
 export const customUpdater = new CustomUpdater();
-

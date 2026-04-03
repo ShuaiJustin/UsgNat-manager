@@ -1,0 +1,15 @@
+{
+  "files.exclude": {
+    "**/.git": true,
+    "**/.claude": true,
+    "**/dist": true,
+    "**/node_modules": true,
+    "**/release": true
+  },
+  "explorer.fileNesting.enabled": true,
+  "explorer.fileNesting.expand": false,
+  "explorer.fileNesting.patterns": {
+    "package.json": "package-lock.json,.npmrc,index.html,postcss.config.js,tailwind.config.js,vite.config.ts,eslint.config.js,tsconfig.json,tsconfig.eslint.json,tsconfig.main.json,tsconfig.node.json",
+    ".gitignore": ".prettierignore,.prettierrc.json"
+  }
+}

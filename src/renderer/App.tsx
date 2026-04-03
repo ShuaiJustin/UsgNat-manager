@@ -1,29 +1,32 @@
-import { ConfigProvider, theme, App as AntdApp } from 'antd';
+import { useEffect } from 'react';
+import { App as AntdApp, ConfigProvider, theme } from 'antd';
 import zhCN from 'antd/locale/zh_CN';
 import enUS from 'antd/locale/en_US';
-import { HashRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { useEffect } from 'react';
+import { HashRouter, Navigate, Route, Routes } from 'react-router-dom';
+import { useTranslation } from 'react-i18next';
+
+import AutomationConfirmDialog from './components/AutomationConfirmDialog';
+import ErrorBoundary from './components/ErrorBoundary';
 import MainLayout from './components/Layout/MainLayout';
+import UpdateDialog from './components/UpdateDialog';
+import './i18n';
+import Automation from './pages/Automation';
 import Dashboard from './pages/Dashboard';
 import Devices from './pages/Devices';
-import Rules from './pages/Rules';
-import Automation from './pages/Automation';
 import Logs from './pages/Logs';
+import Rules from './pages/Rules';
 import Settings from './pages/Settings';
 import { useAppStore } from './stores/app.store';
+import type { LanguageType } from './stores/app.store';
 import { useMonitorStore } from './stores/monitor.store';
-import ErrorBoundary from './components/ErrorBoundary';
-import UpdateDialog from './components/UpdateDialog';
-import './i18n'; // 导入 i18n 配置
-import { useTranslation } from 'react-i18next';
 
 const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
       refetchOnWindowFocus: false,
       retry: 1,
-      staleTime: 30000, // 30秒
+      staleTime: 30000,
     },
   },
 });
@@ -34,33 +37,29 @@ function App() {
   const { startMonitor, stopMonitor } = useMonitorStore();
   const { i18n } = useTranslation();
 
-  // 同步语言到i18n
   useEffect(() => {
     if (i18n.language !== language) {
-      i18n.changeLanguage(language);
+      void i18n.changeLanguage(language);
     }
   }, [language, i18n]);
 
-  // 启动时加载配置和监控状态
   useEffect(() => {
     const loadConfig = async () => {
       try {
-        const api = (window as any).electronAPI;
+        const api = window.electronAPI;
 
-        // 加载应用配置
         if (api?.config?.get) {
-          const appConfig = await api.config.get('app');
-
-          // 初始化应用配置
+          const appConfig = await api.config.get<{ scale?: string; language?: LanguageType }>(
+            'app'
+          );
           if (appConfig) {
             initializeFromConfig({
-              scale: appConfig?.scale || '100',
-              language: appConfig?.language || 'zh-CN',
+              scale: appConfig.scale || '100',
+              language: appConfig.language || 'zh-CN',
             });
           }
         }
 
-        // 同步监控状态
         if (api?.monitor?.getStatus) {
           const status = await api.monitor.getStatus();
           if (status?.isRunning) {
@@ -74,50 +73,43 @@ function App() {
       }
     };
 
-    loadConfig();
+    void loadConfig();
   }, [initializeFromConfig, startMonitor, stopMonitor]);
 
-  // 监听托盘监控操作（静默执行，不显示消息）
   useEffect(() => {
-    const api = (window as any).electronAPI;
-    if (!api?.on || !api?.monitor) return;
+    const api = window.electronAPI;
+    if (!api?.on || !api?.monitor) {
+      return;
+    }
 
-    // 启动监控处理器
     const handleMonitorStart = async () => {
       try {
         const result = await api.monitor.start();
         if (result?.success) {
-          startMonitor(); // 同步更新store状态
-          // 托盘操作静默执行，不显示消息（Dashboard 按钮操作时会显示）
+          startMonitor();
         }
-      } catch (error: any) {
+      } catch (error) {
         console.error('托盘启动监控失败:', error);
       }
     };
 
-    // 停止监控处理器
     const handleMonitorStop = async () => {
       try {
         const result = await api.monitor.stop();
         if (result?.success) {
-          stopMonitor(); // 同步更新store状态
-          // 托盘操作静默执行
+          stopMonitor();
         }
-      } catch (error: any) {
+      } catch (error) {
         console.error('托盘停止监控失败:', error);
       }
     };
 
-    // 注册监听器
     api.on('monitor:start', handleMonitorStart);
     api.on('monitor:stop', handleMonitorStop);
 
-    // 清理监听器
     return () => {
-      if (api?.off) {
-        api.off('monitor:start', handleMonitorStart);
-        api.off('monitor:stop', handleMonitorStop);
-      }
+      api.off?.('monitor:start', handleMonitorStart);
+      api.off?.('monitor:stop', handleMonitorStop);
     };
   }, [startMonitor, stopMonitor]);
 
@@ -137,6 +129,7 @@ function App() {
         <QueryClientProvider client={queryClient}>
           <ErrorBoundary>
             <UpdateDialog />
+            <AutomationConfirmDialog />
             <HashRouter
               future={{
                 v7_startTransition: true,
