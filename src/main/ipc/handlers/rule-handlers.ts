@@ -1,11 +1,29 @@
+import type { Device, NatRule, Prisma } from '@prisma/client';
 import { ipcMain } from 'electron';
 import { credentialManager } from '../../services/credential-manager';
 import { logger } from '../../services/logger';
 import { notifier } from '../../services/notifier';
 import { prisma } from '../../services/prisma-client';
 import { sshManager } from '../../services/ssh-manager';
-import { usgParser } from '../../services/usg-parser';
+import { usgParser, type ParsedNatRule } from '../../services/usg-parser';
 import { assertSupportedDeviceAccess } from './shared';
+
+type RuleWritePayload = {
+  ruleName: string;
+  protocol: ParsedNatRule['protocol'];
+  globalIp: string;
+  globalPort: string;
+  insideIp: string;
+  insidePort: string;
+  enabled: boolean;
+  description?: string | null;
+  noReverse?: boolean | null;
+};
+
+type RuleUpdatePayload = Partial<RuleWritePayload>;
+
+const getErrorMessage = (error: unknown): string =>
+  error instanceof Error ? error.message : String(error);
 
 export function registerRuleHandlers() {
   ipcMain.handle('rule:getAll', async (event, deviceId: string) => {
@@ -19,14 +37,14 @@ export function registerRuleHandlers() {
     try {
       const count = await prisma.natRule.count();
       return count;
-    } catch (error: any) {
-      await logger.error('规则管理', '获取规则总数失败', { error: error.message });
+    } catch (error: unknown) {
+      await logger.error('规则管理', '获取规则总数失败', { error: getErrorMessage(error) });
       return 0;
     }
   });
 
   ipcMain.handle('rule:syncFromDevice', async (event, deviceId: string) => {
-    let device: any = null;
+    let device: Device | null = null;
     try {
       device = await prisma.device.findUnique({ where: { id: deviceId } });
       if (!device) {
@@ -86,7 +104,7 @@ export function registerRuleHandlers() {
       const parsedRules = usgParser.parseNatServerList(result.output);
 
       // 保存到数据库
-      const savedRules: any[] = [];
+      const savedRules: NatRule[] = [];
       for (const rule of parsedRules) {
         // 先查找是否存在
         const existing = await prisma.natRule.findFirst({
@@ -135,7 +153,7 @@ export function registerRuleHandlers() {
       await sshManager.disconnect(deviceId);
       await logger.success('获取规则', `从设备 ${device.name} 获取了 ${savedRules.length} 条规则`);
       return savedRules;
-    } catch (error: any) {
+    } catch (error: unknown) {
       // 确保断开连接
       try {
         await sshManager.disconnect(deviceId);
@@ -144,7 +162,7 @@ export function registerRuleHandlers() {
       }
 
       const errorDetails = {
-        error: error.message,
+        error: getErrorMessage(error),
         deviceId,
         deviceName: device?.name || 'unknown',
         timestamp: new Date().toISOString(),
@@ -153,12 +171,12 @@ export function registerRuleHandlers() {
       await logger.error('获取规则', '获取失败', errorDetails);
 
       // 抛出更具体的错误
-      throw new Error(`获取规则失败: ${error.message}`);
+      throw new Error(`获取规则失败: ${getErrorMessage(error)}`);
     }
   });
 
   ipcMain.handle('rule:syncToDevice', async (event, deviceId: string) => {
-    let device: any = null;
+    let device: Device | null = null;
     try {
       device = await prisma.device.findUnique({ where: { id: deviceId } });
       if (!device) {
@@ -206,7 +224,7 @@ export function registerRuleHandlers() {
 
       const queryResult = await sshManager.executeCommand(deviceId, queryCommand);
 
-      let deviceRules: any[] = [];
+      let deviceRules: ParsedNatRule[] = [];
       if (queryResult.success && queryResult.output && queryResult.output.trim() !== '') {
         // 记录原始输出，用于调试
         await logger.info('同步规则', '设备原始配置输出', {
@@ -249,7 +267,7 @@ export function registerRuleHandlers() {
       // 生成同步命令
       const parsedLocalRules = localRules.map((r) => ({
         ruleName: r.ruleName,
-        protocol: r.protocol as any,
+        protocol: r.protocol as ParsedNatRule['protocol'],
         globalIp: r.globalIp,
         globalPort: r.globalPort,
         insideIp: r.insideIp,
@@ -302,7 +320,7 @@ export function registerRuleHandlers() {
         syncedCount: localRules.length,
         message: '增量同步成功',
       };
-    } catch (error: any) {
+    } catch (error: unknown) {
       // 确保断开连接
       try {
         await sshManager.disconnect(deviceId);
@@ -311,7 +329,7 @@ export function registerRuleHandlers() {
       }
 
       const errorDetails = {
-        error: error.message,
+        error: getErrorMessage(error),
         deviceId,
         deviceName: device?.name || 'unknown',
         timestamp: new Date().toISOString(),
@@ -319,14 +337,14 @@ export function registerRuleHandlers() {
 
       await logger.error('同步规则', '同步到设备失败', errorDetails);
 
-      throw new Error(`同步到设备失败: ${error.message}`);
+      throw new Error(`同步到设备失败: ${getErrorMessage(error)}`);
     }
   });
 
   ipcMain.handle(
     'rule:batchUpdateIP',
     async (event, deviceId: string, ruleIds: string[], newIP: string) => {
-      let device: any = null;
+      let device: Device | null = null;
       try {
         device = await prisma.device.findUnique({ where: { id: deviceId } });
         if (!device) {
@@ -364,7 +382,7 @@ export function registerRuleHandlers() {
         // 生成更新命令
         const parsedRules = rules.map((r) => ({
           ruleName: r.ruleName,
-          protocol: r.protocol as any,
+          protocol: r.protocol as ParsedNatRule['protocol'],
           globalIp: r.globalIp,
           globalPort: r.globalPort,
           insideIp: r.insideIp,
@@ -399,9 +417,9 @@ export function registerRuleHandlers() {
           success: true,
           updated: ruleIds.length,
         };
-      } catch (error: any) {
+      } catch (error: unknown) {
         await logger.error('批量更新', '更新失败', {
-          error: error.message,
+          error: getErrorMessage(error),
           deviceId,
           deviceName: device?.name || 'unknown',
         });
@@ -417,46 +435,50 @@ export function registerRuleHandlers() {
     }
   );
 
-  ipcMain.handle('rule:create', async (event, deviceId: string, rule: any) => {
+  ipcMain.handle('rule:create', async (event, deviceId: string, rule: RuleWritePayload) => {
     try {
       const newRule = await prisma.natRule.create({
         data: {
           ...rule,
+          noReverse: rule.noReverse ?? undefined,
           deviceId,
         },
       });
-      await logger.success('规则管理', `规则创建成功: ${rule.ruleName}`, {
+      await logger.success('Rule Management', `Rule created: ${rule.ruleName}`, {
         deviceId,
         protocol: rule.protocol,
         globalIp: rule.globalIp,
         globalPort: rule.globalPort,
       });
       return newRule;
-    } catch (error: any) {
-      await logger.error('规则管理', '规则创建失败', {
+    } catch (error: unknown) {
+      await logger.error('Rule Management', 'Rule creation failed', {
         deviceId,
         ruleName: rule.ruleName,
-        error: error.message,
+        error: getErrorMessage(error),
       });
       throw error;
     }
   });
 
-  ipcMain.handle('rule:update', async (event, id: string, rule: any) => {
+  ipcMain.handle('rule:update', async (event, id: string, rule: RuleUpdatePayload) => {
     try {
       const updatedRule = await prisma.natRule.update({
         where: { id },
-        data: rule,
+        data: {
+          ...rule,
+          noReverse: rule.noReverse ?? undefined,
+        },
       });
-      await logger.success('规则管理', `规则更新成功: ${rule.ruleName || ''}`, {
+      await logger.success('Rule Management', `Rule updated: ${rule.ruleName || ''}`, {
         ruleId: id,
         updates: rule,
       });
       return updatedRule;
-    } catch (error: any) {
-      await logger.error('规则管理', '规则更新失败', {
+    } catch (error: unknown) {
+      await logger.error('Rule Management', 'Rule update failed', {
         ruleId: id,
-        error: error.message,
+        error: getErrorMessage(error),
       });
       throw error;
     }
@@ -468,25 +490,34 @@ export function registerRuleHandlers() {
         where: { id },
       });
       await logger.info('规则管理', '规则删除成功', { ruleId: id });
-    } catch (error: any) {
-      await logger.error('规则管理', '规则删除失败', { ruleId: id, error: error.message });
+    } catch (error: unknown) {
+      await logger.error('规则管理', '规则删除失败', { ruleId: id, error: getErrorMessage(error) });
       throw error;
     }
   });
 
-  ipcMain.handle('rule:batchUpdate', async (event, ruleIds: string[], updates: any) => {
-    try {
-      await prisma.natRule.updateMany({
-        where: { id: { in: ruleIds } },
-        data: updates,
-      });
-      await logger.success('规则管理', `批量更新 ${ruleIds.length} 条规则`, updates);
-      return { success: true, count: ruleIds.length };
-    } catch (error: any) {
-      await logger.error('规则管理', '批量更新失败', { error: error.message });
-      throw error;
+  ipcMain.handle(
+    'rule:batchUpdate',
+    async (event, ruleIds: string[], updates: Prisma.NatRuleUpdateManyMutationInput) => {
+      try {
+        await prisma.natRule.updateMany({
+          where: { id: { in: ruleIds } },
+          data: updates,
+        });
+        await logger.success('Rule Management', `Batch updated ${ruleIds.length} rules`, {
+          ruleIds,
+          updates,
+        });
+        return { success: true, count: ruleIds.length };
+      } catch (error: unknown) {
+        await logger.error('Rule Management', 'Batch update failed', {
+          error: getErrorMessage(error),
+          ruleIds,
+        });
+        throw error;
+      }
     }
-  });
+  );
 
   // 监控管理
 }

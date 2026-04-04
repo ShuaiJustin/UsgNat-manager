@@ -1,5 +1,5 @@
 import { EventEmitter } from 'events';
-import axios, { AxiosInstance } from 'axios';
+import axios, { AxiosInstance, type AxiosRequestConfig, type CreateAxiosDefaults } from 'axios';
 import { HttpsProxyAgent } from 'https-proxy-agent';
 import http from 'node:http';
 import https from 'node:https';
@@ -22,6 +22,39 @@ export interface IPMonitorConfig {
   confirmCount: number;
   sources: string[];
 }
+
+const getErrorDetails = (error: unknown) => {
+  if (axios.isAxiosError(error)) {
+    return {
+      code: error.code || 'UNKNOWN',
+      message: error.message,
+      syscall: '',
+      errno: '',
+    };
+  }
+
+  if (error instanceof Error) {
+    const errorWithMetadata = error as Error & {
+      code?: string;
+      syscall?: string;
+      errno?: string | number;
+    };
+
+    return {
+      code: errorWithMetadata.code || 'UNKNOWN',
+      message: errorWithMetadata.message,
+      syscall: errorWithMetadata.syscall || '',
+      errno: String(errorWithMetadata.errno || ''),
+    };
+  }
+
+  return {
+    code: 'UNKNOWN',
+    message: String(error),
+    syscall: '',
+    errno: '',
+  };
+};
 
 export class IPMonitor extends EventEmitter {
   private currentIP = '';
@@ -50,7 +83,7 @@ export class IPMonitor extends EventEmitter {
       sources: normalizeIPCheckSources(nextConfig.sources),
     };
 
-    const axiosConfig: any = {
+    const axiosConfig: CreateAxiosDefaults = {
       timeout: 12000,
       headers: {
         'User-Agent':
@@ -195,9 +228,8 @@ export class IPMonitor extends EventEmitter {
           results.push(ip);
           await new Promise((resolve) => setTimeout(resolve, 500));
         }
-      } catch (error: any) {
-        const errorCode = error.code || 'UNKNOWN';
-        const errorMsg = error.message || String(error);
+      } catch (error: unknown) {
+        const { code: errorCode, message: errorMsg } = getErrorDetails(error);
         errors.push(`${source.name}: ${errorCode} - ${errorMsg}`);
 
         logger
@@ -214,11 +246,11 @@ export class IPMonitor extends EventEmitter {
   }
 
   private async fetchIPFromSource(source: IPCheckSource, retries = 2): Promise<string> {
-    let lastError: any;
+    let lastError: unknown;
 
     for (let i = 0; i < retries; i++) {
       try {
-        const config: any = {};
+        const config: AxiosRequestConfig = {};
         if (source.name === '淘宝IP接口') {
           config.headers = {
             Referer: 'https://www.taobao.com/',
@@ -227,12 +259,10 @@ export class IPMonitor extends EventEmitter {
 
         const response = await this.axiosInstance.get(source.url, config);
         return source.parser(response.data);
-      } catch (error: any) {
+      } catch (error: unknown) {
         lastError = error;
 
-        const errorCode = error.code || 'UNKNOWN';
-        const syscall = error.syscall || '';
-        const errnoDescription = error.errno || '';
+        const { code: errorCode, syscall, errno: errnoDescription } = getErrorDetails(error);
 
         if (i < retries - 1) {
           const waitTime = 2000 * (i + 1);
@@ -256,7 +286,7 @@ export class IPMonitor extends EventEmitter {
       }
     }
 
-    throw lastError;
+    throw lastError instanceof Error ? lastError : new Error(String(lastError));
   }
 
   getCurrentIPSync(): string {

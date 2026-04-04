@@ -17,6 +17,40 @@ import {
   resolveUpdateAssetUrl,
 } from './custom-updater-helpers';
 
+type UnknownRecord = Record<string, unknown>;
+
+type UpdateConfig = {
+  autoCheck?: boolean;
+  checkFrequency?: string;
+};
+
+type UpdateAssetInfo = {
+  url: string;
+  sha256?: string;
+};
+
+type UpdateVersionInfo = {
+  version: string;
+  changelog?: string[];
+  releaseDate?: string;
+  mandatory?: boolean;
+  sha256?: string;
+  files?: {
+    asar?: UpdateAssetInfo;
+    full?: UpdateAssetInfo;
+  };
+  _serverUrl?: string;
+};
+
+const isRecord = (value: unknown): value is UnknownRecord =>
+  typeof value === 'object' && value !== null;
+
+const isUpdateVersionInfo = (value: unknown): value is UpdateVersionInfo =>
+  isRecord(value) && typeof value.version === 'string';
+
+const getErrorMessage = (error: unknown): string =>
+  error instanceof Error ? error.message : String(error);
+
 /**
  * 自定义更新服务
  *
@@ -38,7 +72,7 @@ class CustomUpdater {
   ];
 
   private downloadedFilePath: string | null = null;
-  private latestVersionInfo: any = null;
+  private latestVersionInfo: UpdateVersionInfo | null = null;
   private periodicCheckTimer: ReturnType<typeof setInterval> | null = null;
   private lastCheckTime: number = 0;
   private downloadRetryCount = 0;
@@ -51,8 +85,10 @@ class CustomUpdater {
     this.mainWindow = window;
     // 延迟启动定期检查，避免影响应用启动速度
     setTimeout(() => {
-      this.startPeriodicCheck().catch((error) => {
-        logger.error('自动更新', '启动定期检查失败', { error: error.message }).catch(() => {});
+      this.startPeriodicCheck().catch((error: unknown) => {
+        logger
+          .error('自动更新', '启动定期检查失败', { error: getErrorMessage(error) })
+          .catch(() => {});
       });
     }, 1000);
   }
@@ -66,7 +102,7 @@ class CustomUpdater {
       this.periodicCheckTimer = null;
     }
 
-    const updateConfig = await configService.getConfig('update');
+    const updateConfig = (await configService.getConfig<UpdateConfig>('update')) ?? {};
     const autoCheck = updateConfig?.autoCheck !== false;
     const checkFrequency = updateConfig?.checkFrequency || 'daily';
 
@@ -129,7 +165,7 @@ class CustomUpdater {
   /**
    * 向窗口发送消息
    */
-  private sendMessage(event: string, data?: any) {
+  private sendMessage(event: string, data?: unknown) {
     if (this.mainWindow && !this.mainWindow.isDestroyed()) {
       const message = data !== undefined ? { event, data } : { event };
       this.mainWindow.webContents.send('updater-message', message);
@@ -212,21 +248,22 @@ class CustomUpdater {
         currentVersion,
         latestVersion,
       };
-    } catch (error: any) {
-      logger.error('自动更新', '检查更新失败', { error: error.message });
-      this.sendMessage('update-error', error.message);
+    } catch (error: unknown) {
+      const errorMessage = getErrorMessage(error);
+      logger.error('自动更新', '检查更新失败', { error: errorMessage });
+      this.sendMessage('update-error', errorMessage);
 
       if (showNoUpdateMessage) {
         this.sendMessage('show-update-dialog', {
           type: 'update-error',
-          message: error.message,
+          message: errorMessage,
         });
       }
 
       this.isChecking = false;
       return {
         success: false,
-        message: error.message,
+        message: errorMessage,
         hasUpdate: false,
       };
     }
@@ -235,7 +272,7 @@ class CustomUpdater {
   /**
    * 从服务器获取版本信息（支持多个服务器地址，自动尝试备用地址）
    */
-  private async fetchVersionInfo(): Promise<any> {
+  private async fetchVersionInfo(): Promise<UpdateVersionInfo> {
     let lastError: Error | null = null;
 
     for (const serverUrl of this.updateServerUrls) {
@@ -243,9 +280,9 @@ class CustomUpdater {
         const versionInfo = await this.fetchFromServer(serverUrl);
         logger.info('自动更新', `从服务器获取版本信息成功: ${serverUrl}`);
         return versionInfo;
-      } catch (error: any) {
-        logger.warning('自动更新', `服务器 ${serverUrl} 访问失败: ${error.message}`);
-        lastError = error;
+      } catch (error: unknown) {
+        logger.warning('自动更新', `服务器 ${serverUrl} 访问失败: ${getErrorMessage(error)}`);
+        lastError = error instanceof Error ? error : new Error(String(error));
       }
     }
 
@@ -255,7 +292,7 @@ class CustomUpdater {
   /**
    * 从 API 服务器获取版本信息
    */
-  private async fetchFromServer(serverUrl: string): Promise<any> {
+  private async fetchFromServer(serverUrl: string): Promise<UpdateVersionInfo> {
     const currentVersion = app.getVersion();
 
     // API 端点
@@ -267,7 +304,7 @@ class CustomUpdater {
       currentVersion,
     });
 
-    return new Promise((resolve, reject) => {
+    return new Promise<UpdateVersionInfo>((resolve, reject) => {
       const parsedUrl = new URL(apiUrl);
       const options = {
         hostname: parsedUrl.hostname,
@@ -300,7 +337,12 @@ class CustomUpdater {
 
         res.on('end', () => {
           try {
-            const versionInfo = JSON.parse(data);
+            const versionInfo = JSON.parse(data) as unknown;
+
+            if (!isUpdateVersionInfo(versionInfo)) {
+              reject(new Error('版本信息格式无效'));
+              return;
+            }
 
             // 保存服务器地址用于后续下载
             versionInfo._serverUrl = serverUrl;
@@ -342,7 +384,7 @@ class CustomUpdater {
 
     try {
       await this.downloadUpdateWithRetry();
-    } catch (error: any) {
+    } catch (error: unknown) {
       this.isDownloading = false;
       throw error;
     }
@@ -431,10 +473,10 @@ class CustomUpdater {
         });
 
         return;
-      } catch (error: any) {
-        lastError = error;
+      } catch (error: unknown) {
+        lastError = error instanceof Error ? error : new Error(String(error));
         logger.error('自动更新', `下载失败 (尝试 ${attempt}/${this.maxRetries})`, {
-          error: error.message,
+          error: getErrorMessage(error),
         });
 
         if (attempt < this.maxRetries) {
@@ -529,9 +571,9 @@ class CustomUpdater {
           let redirectUrl: string;
           try {
             redirectUrl = resolveUpdateAssetUrl(redirectLocation, url);
-          } catch (error: any) {
+          } catch (error: unknown) {
             cleanup();
-            reject(new Error(`解析重定向URL失败: ${error.message}`));
+            reject(new Error(`解析重定向URL失败: ${getErrorMessage(error)}`));
             return;
           }
 
@@ -634,9 +676,9 @@ class CustomUpdater {
         filename: backupInfo.filename,
         backupId: backupInfo.id,
       });
-    } catch (error: any) {
+    } catch (error: unknown) {
       await logger.warning('自动更新', '备份创建失败，但将继续安装', {
-        error: error.message,
+        error: getErrorMessage(error),
       });
     }
 
@@ -672,9 +714,10 @@ class CustomUpdater {
       setTimeout(() => {
         app.quit();
       }, 1000);
-    } catch (error: any) {
-      await logger.error('自动更新', '启动安装程序失败', { error: error.message });
-      throw new Error(`启动安装程序失败: ${error.message}`);
+    } catch (error: unknown) {
+      const errorMessage = getErrorMessage(error);
+      await logger.error('自动更新', '启动安装程序失败', { error: errorMessage });
+      throw new Error(`启动安装程序失败: ${errorMessage}`);
     }
   }
 
@@ -709,10 +752,10 @@ class CustomUpdater {
             fs.unlinkSync(filePath);
             cleanedCount++;
             await logger.info('自动更新', `已清理旧安装包: ${file}`);
-          } catch (error: any) {
+          } catch (error: unknown) {
             // 文件可能正在使用或无权限删除，忽略错误
             await logger.warning('自动更新', `清理安装包失败: ${file}`, {
-              error: error.message,
+              error: getErrorMessage(error),
             });
           }
         }
@@ -721,16 +764,19 @@ class CustomUpdater {
       if (cleanedCount > 0) {
         await logger.success('自动更新', `清理完成，共删除 ${cleanedCount} 个旧安装包`);
       }
-    } catch (error: any) {
-      await logger.error('自动更新', '清理旧安装包失败', { error: error.message });
+    } catch (error: unknown) {
+      await logger.error('自动更新', '清理旧安装包失败', { error: getErrorMessage(error) });
     }
   }
 
   /**
    * ASAR 增量更新
    */
-  private async downloadAsarUpdate(versionInfo: any): Promise<void> {
-    const asarInfo = versionInfo.files.asar;
+  private async downloadAsarUpdate(versionInfo: UpdateVersionInfo): Promise<void> {
+    const asarInfo = versionInfo.files?.asar;
+    if (!asarInfo?.url) {
+      throw new Error('无法获取 ASAR 下载地址');
+    }
 
     // 构建下载地址
     const serverUrl = versionInfo._serverUrl || this.updateServerUrls[0];
@@ -780,13 +826,13 @@ class CustomUpdater {
         version: versionInfo.version,
         updateType: 'asar',
       });
-    } catch (error: any) {
+    } catch (error: unknown) {
       // 恢复备份
       if (fs.existsSync(backupAsarPath)) {
         fs.copyFileSync(backupAsarPath, currentAsarPath);
         logger.warning('自动更新', '更新失败，已恢复备份');
       }
-      throw error;
+      throw error instanceof Error ? error : new Error(String(error));
     }
   }
 }

@@ -10,21 +10,37 @@ type ConfigStatLike = {
   updatedAt: Date | null;
 };
 
+type UnknownRecord = Record<string, unknown>;
+type AuthWithPasswordRecord = UnknownRecord & {
+  auth: UnknownRecord & {
+    pass: string;
+  };
+};
+
 const MASKED_EXPORT_PASSWORD = '***masked***';
 const EXPORT_WARNING = 'This export may contain sensitive configuration. Keep it secure.';
 
+const isRecord = (value: unknown): value is UnknownRecord =>
+  typeof value === 'object' && value !== null;
+
+const hasAuthPassword = (value: unknown): value is AuthWithPasswordRecord =>
+  isRecord(value) &&
+  isRecord(value.auth) &&
+  typeof value.auth.pass === 'string' &&
+  value.auth.pass.length > 0;
+
 export const encryptSensitiveConfig = <T>(type: string, data: T, encryptionKey: string): T => {
-  if (type !== 'email' || !(data as any)?.auth?.pass) {
+  if (type !== 'email' || !hasAuthPassword(data)) {
     return data;
   }
 
   return {
-    ...(data as any),
+    ...data,
     auth: {
-      ...(data as any).auth,
-      pass: CryptoJS.AES.encrypt((data as any).auth.pass, encryptionKey).toString(),
+      ...data.auth,
+      pass: CryptoJS.AES.encrypt(data.auth.pass, encryptionKey).toString(),
     },
-  };
+  } as T;
 };
 
 export const decryptSensitiveConfig = <T>(
@@ -33,7 +49,7 @@ export const decryptSensitiveConfig = <T>(
   encryptionKey: string,
   keyInitialized: boolean
 ): T => {
-  if (type !== 'email' || !(data as any)?.auth?.pass) {
+  if (type !== 'email' || !hasAuthPassword(data)) {
     return data;
   }
 
@@ -42,7 +58,7 @@ export const decryptSensitiveConfig = <T>(
   }
 
   try {
-    const bytes = CryptoJS.AES.decrypt((data as any).auth.pass, encryptionKey);
+    const bytes = CryptoJS.AES.decrypt(data.auth.pass, encryptionKey);
     const decrypted = bytes.toString(CryptoJS.enc.Utf8);
 
     if (!decrypted) {
@@ -50,19 +66,21 @@ export const decryptSensitiveConfig = <T>(
     }
 
     return {
-      ...(data as any),
+      ...data,
       auth: {
-        ...(data as any).auth,
+        ...data.auth,
         pass: decrypted,
       },
-    };
+    } as T;
   } catch {
     return data;
   }
 };
 
-export const parseStoredConfigs = (configs: readonly ConfigEntryLike[]): Record<string, any> => {
-  const result: Record<string, any> = {};
+export const parseStoredConfigs = (
+  configs: readonly ConfigEntryLike[]
+): Record<string, unknown> => {
+  const result: Record<string, unknown> = {};
 
   for (const config of configs) {
     try {
@@ -76,12 +94,12 @@ export const parseStoredConfigs = (configs: readonly ConfigEntryLike[]): Record<
 };
 
 export const createConfigExportPayload = (
-  configs: Record<string, any>,
+  configs: Record<string, unknown>,
   exportTime = new Date().toISOString()
 ) => {
-  const safeConfigs = { ...configs };
+  const safeConfigs: Record<string, unknown> = { ...configs };
 
-  if (safeConfigs.email?.auth?.pass) {
+  if (hasAuthPassword(safeConfigs.email)) {
     safeConfigs.email = {
       ...safeConfigs.email,
       auth: {

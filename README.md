@@ -477,6 +477,12 @@ npx prisma studio
 # 代码检查
 npm run lint
 
+# 运行源码测试
+npm test
+
+# 仅运行 src 下测试
+npm run test:src
+
 # 格式化代码
 npm run format
 ```

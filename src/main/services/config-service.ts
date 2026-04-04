@@ -23,6 +23,9 @@ export type ConfigType =
   | 'app'
   | 'update';
 
+const getErrorMessage = (error: unknown): string =>
+  error instanceof Error ? error.message : String(error);
+
 class ConfigService {
   private encryptionKey = '';
   private keyFilePath: string;
@@ -30,10 +33,10 @@ class ConfigService {
 
   constructor() {
     this.keyFilePath = path.join(app.getPath('userData'), '.credential-key');
-    this.initializeEncryptionKey().catch((error: any) => {
+    this.initializeEncryptionKey().catch((error: unknown) => {
       logger
         .error('Config', 'Failed to initialize encryption key', {
-          error: error.message,
+          error: getErrorMessage(error),
         })
         .catch(() => {});
     });
@@ -57,15 +60,15 @@ class ConfigService {
     }
   }
 
-  private encryptSensitiveData(type: ConfigType, data: any): any {
+  private encryptSensitiveData<T>(type: ConfigType, data: T): T {
     return encryptSensitiveConfig(type, data, this.encryptionKey);
   }
 
-  private decryptSensitiveData(type: ConfigType, data: any): any {
+  private decryptSensitiveData<T>(type: ConfigType, data: T): T {
     return decryptSensitiveConfig(type, data, this.encryptionKey, this.keyInitialized);
   }
 
-  async saveConfig(type: ConfigType, data: any): Promise<void> {
+  async saveConfig<T>(type: ConfigType, data: T): Promise<void> {
     try {
       await this.ensureKeyInitialized();
 
@@ -83,16 +86,16 @@ class ConfigService {
       });
 
       await logger.info('Config', `Saved config: ${type}`);
-    } catch (error: any) {
+    } catch (error: unknown) {
       await logger.error('Config', 'Failed to save config', {
         type,
-        error: error.message,
+        error: getErrorMessage(error),
       });
       throw error;
     }
   }
 
-  async getConfig<T = any>(type: ConfigType, defaultValue?: T): Promise<T | null> {
+  async getConfig<T = unknown>(type: ConfigType, defaultValue?: T): Promise<T | null> {
     try {
       await this.ensureKeyInitialized();
 
@@ -101,17 +104,17 @@ class ConfigService {
       });
 
       if (!config) {
-        return defaultValue || null;
+        return defaultValue ?? null;
       }
 
       const parsedData = JSON.parse(config.value) as T;
       return this.decryptSensitiveData(type, parsedData) as T;
-    } catch (error: any) {
+    } catch (error: unknown) {
       await logger.error('Config', 'Failed to get config', {
         type,
-        error: error.message,
+        error: getErrorMessage(error),
       });
-      return defaultValue || null;
+      return defaultValue ?? null;
     }
   }
 
@@ -122,21 +125,21 @@ class ConfigService {
       });
 
       await logger.info('Config', `Deleted config: ${type}`);
-    } catch (error: any) {
+    } catch (error: unknown) {
       await logger.error('Config', 'Failed to delete config', {
         type,
-        error: error.message,
+        error: getErrorMessage(error),
       });
       throw error;
     }
   }
 
-  async getAllConfigs(): Promise<Record<string, any>> {
+  async getAllConfigs(): Promise<Record<string, unknown>> {
     try {
       const configs = await prisma.config.findMany();
       return parseStoredConfigs(configs);
-    } catch (error: any) {
-      await logger.error('Config', 'Failed to get all configs', { error: error.message });
+    } catch (error: unknown) {
+      await logger.error('Config', 'Failed to get all configs', { error: getErrorMessage(error) });
       return {};
     }
   }
@@ -153,8 +156,8 @@ class ConfigService {
 
       await logger.success('Config', 'Exported config successfully', { path: targetPath });
       return targetPath;
-    } catch (error: any) {
-      await logger.error('Config', 'Failed to export config', { error: error.message });
+    } catch (error: unknown) {
+      await logger.error('Config', 'Failed to export config', { error: getErrorMessage(error) });
       throw error;
     }
   }
@@ -162,7 +165,7 @@ class ConfigService {
   async importConfig(filePath: string): Promise<void> {
     try {
       const content = await fs.readFile(filePath, 'utf-8');
-      const importData = JSON.parse(content);
+      const importData = JSON.parse(content) as { configs?: Record<string, unknown> };
 
       if (!importData.configs) {
         throw new Error('Invalid config file format');
@@ -175,8 +178,8 @@ class ConfigService {
       await logger.success('Config', 'Imported config successfully', {
         count: Object.keys(importData.configs).length,
       });
-    } catch (error: any) {
-      await logger.error('Config', 'Failed to import config', { error: error.message });
+    } catch (error: unknown) {
+      await logger.error('Config', 'Failed to import config', { error: getErrorMessage(error) });
       throw error;
     }
   }
@@ -185,8 +188,8 @@ class ConfigService {
     try {
       await prisma.config.deleteMany({});
       await logger.warning('Config', 'Reset all configs');
-    } catch (error: any) {
-      await logger.error('Config', 'Failed to reset configs', { error: error.message });
+    } catch (error: unknown) {
+      await logger.error('Config', 'Failed to reset configs', { error: getErrorMessage(error) });
       throw error;
     }
   }
@@ -202,8 +205,8 @@ class ConfigService {
       });
 
       return summarizeConfigStats(configs);
-    } catch (error: any) {
-      await logger.error('Config', 'Failed to get config stats', { error: error.message });
+    } catch (error: unknown) {
+      await logger.error('Config', 'Failed to get config stats', { error: getErrorMessage(error) });
       return {
         total: 0,
         types: [],

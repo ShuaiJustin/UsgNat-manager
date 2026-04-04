@@ -17,6 +17,8 @@ dist-ssr
 release
 out
 build
+!scripts/build/
+!scripts/build/**
 
 # Editor directories and files
 .vscode/*

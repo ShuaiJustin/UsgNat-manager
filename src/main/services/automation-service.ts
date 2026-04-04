@@ -1,9 +1,10 @@
+import type { NatRule } from '@prisma/client';
 import { EventEmitter } from 'events';
 import * as schedule from 'node-schedule';
 import { app } from 'electron';
 import fs from 'fs/promises';
 import path from 'path';
-import { ipMonitor, IPChangeEvent } from './ip-monitor';
+import { ipMonitor, IPChangeEvent, type IPMonitorConfig } from './ip-monitor';
 import { sshManager } from './ssh-manager';
 import { usgParser } from './usg-parser';
 import { logger } from './logger';
@@ -21,6 +22,40 @@ import { DEFAULT_IP_CHECK_SOURCES } from '../ip-check-sources';
 /**
  * 自动化配置
  */
+type RuleSnapshot = Omit<
+  Pick<
+    NatRule,
+    | 'id'
+    | 'ruleName'
+    | 'protocol'
+    | 'globalIp'
+    | 'globalPort'
+    | 'insideIp'
+    | 'insidePort'
+    | 'enabled'
+    | 'noReverse'
+  >,
+  'noReverse'
+> & {
+  noReverse?: boolean | null;
+};
+
+type DeviceUpdateResult = {
+  success: boolean;
+  updated?: number;
+  message?: string;
+  backupPath?: string | null;
+  error?: string;
+};
+
+type DeviceUpdateSummary = DeviceUpdateResult & {
+  deviceId: string;
+  deviceName: string;
+};
+
+const getErrorMessage = (error: unknown): string =>
+  error instanceof Error ? error.message : String(error);
+
 export interface AutomationConfig {
   enabled: boolean;
   autoUpdateEnabled: boolean;
@@ -91,13 +126,13 @@ class AutomationService extends EventEmitter {
     });
 
     // IP检测事件
-    ipMonitor.on('checked', (data: any) => {
+    ipMonitor.on('checked', (data: unknown) => {
       this.emit('ip-checked', data);
     });
 
     // 错误事件
     ipMonitor.on('error', async (error: Error) => {
-      await logger.error('IP监控', 'IP检测失败', { error: error.message });
+      await logger.error('IP监控', 'IP检测失败', { error: getErrorMessage(error) });
     });
   }
 
@@ -124,8 +159,8 @@ class AutomationService extends EventEmitter {
         this.delayTimer = setTimeout(async () => {
           try {
             await this.executeUpdate(event.newIP);
-          } catch (error: any) {
-            await logger.error('自动更新', '延迟更新执行失败', { error: error.message });
+          } catch (error: unknown) {
+            await logger.error('自动更新', '延迟更新执行失败', { error: getErrorMessage(error) });
           }
         }, delayMs);
         break;
@@ -172,8 +207,8 @@ class AutomationService extends EventEmitter {
               } else {
                 await logger.warning('自动更新', '定时任务触发，但没有待更新的IP');
               }
-            } catch (error: any) {
-              await logger.error('自动更新', '定时任务执行失败', { error: error.message });
+            } catch (error: unknown) {
+              await logger.error('自动更新', '定时任务执行失败', { error: getErrorMessage(error) });
             }
           });
 
@@ -182,8 +217,8 @@ class AutomationService extends EventEmitter {
             `已安排定时任务，每天 ${this.config.scheduledTime} 执行更新`,
             { pendingIP: this.pendingIP }
           );
-        } catch (error: any) {
-          await logger.error('自动更新', '创建定时任务失败', { error: error.message });
+        } catch (error: unknown) {
+          await logger.error('自动更新', '创建定时任务失败', { error: getErrorMessage(error) });
         }
         break;
       }
@@ -259,7 +294,7 @@ class AutomationService extends EventEmitter {
 
       let successCount = 0;
       let failedCount = 0;
-      const results: any[] = [];
+      const results: DeviceUpdateSummary[] = [];
 
       for (const device of devices) {
         try {
@@ -270,13 +305,13 @@ class AutomationService extends EventEmitter {
             failedCount++;
           }
           results.push({ deviceId: device.id, deviceName: device.name, ...result });
-        } catch (error: any) {
+        } catch (error: unknown) {
           failedCount++;
           results.push({
             deviceId: device.id,
             deviceName: device.name,
             success: false,
-            error: error.message,
+            error: getErrorMessage(error),
           });
         }
       }
@@ -287,9 +322,9 @@ class AutomationService extends EventEmitter {
 
       await notifier.notifyBatchUpdateCompleted(successCount, failedCount);
       this.emit('update-completed', { successCount, failedCount, results });
-    } catch (error: any) {
-      await logger.error('自动更新', '批量更新失败', { error: error.message });
-      this.emit('update-failed', { error: error.message });
+    } catch (error: unknown) {
+      await logger.error('自动更新', '批量更新失败', { error: getErrorMessage(error) });
+      this.emit('update-failed', { error: getErrorMessage(error) });
     } finally {
       this.isUpdating = false;
     }
@@ -331,8 +366,10 @@ class AutomationService extends EventEmitter {
       await this.cleanupOldBackups(deviceId);
 
       return filePath;
-    } catch (error: any) {
-      await logger.warning('设备备份', `设备 ${deviceName} 备份失败`, { error: error.message });
+    } catch (error: unknown) {
+      await logger.warning('设备备份', `设备 ${deviceName} 备份失败`, {
+        error: getErrorMessage(error),
+      });
       return null;
     }
   }
@@ -370,14 +407,14 @@ class AutomationService extends EventEmitter {
         try {
           await fs.unlink(backup.path);
           await logger.info('设备备份', `已删除旧备份: ${backup.name}`);
-        } catch (error: any) {
+        } catch (error: unknown) {
           await logger.warning('设备备份', `删除备份失败: ${backup.name}`, {
-            error: error.message,
+            error: getErrorMessage(error),
           });
         }
       }
-    } catch (error: any) {
-      await logger.warning('设备备份', '清理旧备份失败', { error: error.message });
+    } catch (error: unknown) {
+      await logger.warning('设备备份', '清理旧备份失败', { error: getErrorMessage(error) });
     }
   }
 
@@ -387,7 +424,7 @@ class AutomationService extends EventEmitter {
   private async rollbackDeviceRules(
     deviceId: string,
     deviceName: string,
-    oldRules: any[]
+    oldRules: RuleSnapshot[]
   ): Promise<boolean> {
     try {
       await logger.info('规则回滚', `开始回滚设备 ${deviceName} 的规则`);
@@ -437,8 +474,10 @@ class AutomationService extends EventEmitter {
 
       await logger.success('规则回滚', `设备 ${deviceName} 规则已回滚`);
       return true;
-    } catch (error: any) {
-      await logger.error('规则回滚', `设备 ${deviceName} 回滚失败`, { error: error.message });
+    } catch (error: unknown) {
+      await logger.error('规则回滚', `设备 ${deviceName} 回滚失败`, {
+        error: getErrorMessage(error),
+      });
       return false;
     }
   }
@@ -483,8 +522,10 @@ class AutomationService extends EventEmitter {
         ruleCount: rulesWithNewIP.length,
       });
       return true;
-    } catch (error: any) {
-      await logger.warning('规则验证', `设备 ${deviceName} 验证失败`, { error: error.message });
+    } catch (error: unknown) {
+      await logger.warning('规则验证', `设备 ${deviceName} 验证失败`, {
+        error: getErrorMessage(error),
+      });
       return false;
     }
   }
@@ -496,7 +537,7 @@ class AutomationService extends EventEmitter {
   private async integrityCheck(
     deviceId: string,
     deviceName: string,
-    rules: any[],
+    rules: RuleSnapshot[],
     newIP: string
   ): Promise<{ success: boolean; issues: string[] }> {
     try {
@@ -518,19 +559,19 @@ class AutomationService extends EventEmitter {
         deviceId,
       });
       return { success: true, issues: [] };
-    } catch (error: any) {
+    } catch (error: unknown) {
       await logger.warning('Integrity Check', `Device ${deviceName} integrity check failed`, {
         deviceId,
-        error: error.message,
+        error: getErrorMessage(error),
       });
-      return { success: false, issues: [`Integrity check error: ${error.message}`] };
+      return { success: false, issues: [`Integrity check error: ${getErrorMessage(error)}`] };
     }
   }
 
   /**
    * ?????????
    */
-  private async updateDeviceRules(deviceId: string, newIP: string): Promise<any> {
+  private async updateDeviceRules(deviceId: string, newIP: string): Promise<DeviceUpdateResult> {
     const device = await prisma.device.findUnique({ where: { id: deviceId } });
     if (!device) {
       throw new Error('设备不存在');
@@ -633,9 +674,9 @@ class AutomationService extends EventEmitter {
       await notifier.notifyUpdateSuccess(device.name, rules.length, newIP);
 
       return { success: true, updated: rules.length, backupPath };
-    } catch (error: any) {
+    } catch (error: unknown) {
       await logger.error('规则更新', `设备 ${device.name} 更新失败`, {
-        error: error.message,
+        error: getErrorMessage(error),
       });
 
       // 6. 自动回滚（如果启用）
@@ -650,7 +691,7 @@ class AutomationService extends EventEmitter {
         }
       }
 
-      await notifier.notifyUpdateFailed(device.name, error.message);
+      await notifier.notifyUpdateFailed(device.name, getErrorMessage(error));
       throw error;
     } finally {
       await sshManager.disconnect(deviceId);
@@ -726,7 +767,7 @@ class AutomationService extends EventEmitter {
       config.confirmCount !== undefined ||
       config.checkSources !== undefined
     ) {
-      const ipMonitorConfig: any = {};
+      const ipMonitorConfig: Partial<IPMonitorConfig> = {};
 
       if (config.checkInterval !== undefined) {
         ipMonitorConfig.checkInterval = config.checkInterval;
@@ -801,8 +842,8 @@ class AutomationService extends EventEmitter {
           } else {
             await logger.warning('自动更新', '定时任务触发，但没有待更新的IP');
           }
-        } catch (error: any) {
-          await logger.error('自动更新', '定时任务执行失败', { error: error.message });
+        } catch (error: unknown) {
+          await logger.error('自动更新', '定时任务执行失败', { error: getErrorMessage(error) });
         }
       });
 
@@ -811,10 +852,12 @@ class AutomationService extends EventEmitter {
         .catch((err) => {
           console.error('记录日志失败:', err);
         });
-    } catch (error: any) {
-      logger.error('自动更新', '重新安排定时任务失败', { error: error.message }).catch((err) => {
-        console.error('记录日志失败:', err);
-      });
+    } catch (error: unknown) {
+      logger
+        .error('自动更新', '重新安排定时任务失败', { error: getErrorMessage(error) })
+        .catch((err) => {
+          console.error('记录日志失败:', err);
+        });
     }
   }
 
@@ -835,7 +878,7 @@ class AutomationService extends EventEmitter {
       isUpdating: this.isUpdating,
       currentIP: ipMonitor.getCurrentIPSync(),
       pendingIP: this.pendingIP, // 待更新的IP
-      hasScheduledJob: this.scheduledJob !== null, // 是否有定时任务
+      hasScheduledJob: this.scheduledJob !== null, // ???????
       config: this.config,
     };
   }
