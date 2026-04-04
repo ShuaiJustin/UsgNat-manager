@@ -88,6 +88,7 @@
   "build": {
     "appId": "com.crystal.usg-nat-manager",
     "productName": "华为USG防火墙NAT管理软件",
+    "afterPack": "scripts/build/after-pack-win.cjs",
     "npmRebuild": false,
     "asar": true,
     "electronDist": "node_modules/electron/dist",
@@ -150,8 +151,10 @@
           ]
         }
       ],
+      "executableName": "USG-NAT-Manager",
       "icon": "resources/icons/icon.ico",
       "requestedExecutionLevel": "asInvoker",
+      "signAndEditExecutable": false,
       "verifyUpdateCodeSignature": false
     },
     "nsis": {
