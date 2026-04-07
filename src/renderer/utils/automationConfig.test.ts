@@ -17,10 +17,14 @@ test('normalizes legacy automation source ids into supported values', () => {
 });
 
 test('falls back to supported defaults when the saved source list is empty or invalid', () => {
-  assert.deepEqual(normalizeAutomationCheckSources([]), [...DEFAULT_AUTOMATION_CHECK_SOURCES]);
+  assert.deepEqual(normalizeAutomationCheckSources([]), ['cip.cc', 'ipip', 'ip.sb', 'icanhazip']);
   assert.deepEqual(normalizeAutomationCheckSources(['not-supported']), [
-    ...DEFAULT_AUTOMATION_CHECK_SOURCES,
+    'cip.cc',
+    'ipip',
+    'ip.sb',
+    'icanhazip',
   ]);
+  assert.deepEqual([...DEFAULT_AUTOMATION_CHECK_SOURCES], ['cip.cc', 'ipip', 'ip.sb', 'icanhazip']);
 });
 
 test('requires a selected device only when auto-update is enabled', () => {

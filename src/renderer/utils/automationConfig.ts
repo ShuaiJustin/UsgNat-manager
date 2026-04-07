@@ -1,4 +1,4 @@
-export const DEFAULT_AUTOMATION_CHECK_SOURCES = ['cip.cc', 'ipip', 'ipify', 'ip.sb'] as const;
+export const DEFAULT_AUTOMATION_CHECK_SOURCES = ['cip.cc', 'ipip', 'ip.sb', 'icanhazip'] as const;
 
 const SOURCE_ALIASES: Record<string, string> = {
   cip: 'cip.cc',
@@ -7,6 +7,7 @@ const SOURCE_ALIASES: Record<string, string> = {
 
 const SUPPORTED_AUTOMATION_CHECK_SOURCES = new Set<string>([
   ...DEFAULT_AUTOMATION_CHECK_SOURCES,
+  'ipify',
   'icanhazip',
 ]);
 

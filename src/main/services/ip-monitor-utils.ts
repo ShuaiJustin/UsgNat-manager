@@ -40,3 +40,6 @@ export const selectMostCommonIP = (ips: readonly string[]): string => {
 
   return mostCommonIP;
 };
+
+export const getSourceFailureLogLevel = (allSourcesFailed: boolean): 'WARNING' | 'ERROR' =>
+  allSourcesFailed ? 'ERROR' : 'WARNING';

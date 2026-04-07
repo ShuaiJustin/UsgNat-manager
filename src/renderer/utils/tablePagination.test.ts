@@ -6,9 +6,18 @@ import { createTablePagination } from './tablePagination.ts';
 test('disables page-size search for compact table pagination selects', () => {
   const pagination = createTablePagination(10, '信息');
 
-  assert.equal(pagination.pageSize, 10);
+  assert.equal(pagination.defaultPageSize, 10);
+  assert.equal('pageSize' in pagination, false);
   assert.equal(typeof pagination.showSizeChanger, 'object');
   assert.equal(pagination.showSizeChanger?.showSearch, false);
+});
+
+test('keeps table pagination uncontrolled and exposes 20/30 page-size options', () => {
+  const pagination = createTablePagination(10, '信息');
+
+  assert.deepEqual(pagination.pageSizeOptions, ['10', '20', '30', '50', '100']);
+  assert.equal(pagination.defaultPageSize, 10);
+  assert.equal('pageSize' in pagination, false);
 });
 
 test('formats total text with the provided label', () => {

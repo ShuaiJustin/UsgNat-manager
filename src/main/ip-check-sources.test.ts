@@ -13,6 +13,12 @@ test('maps legacy source ids to supported ids and removes duplicates', () => {
 });
 
 test('falls back to the supported defaults when no usable source remains', () => {
-  assert.deepEqual(normalizeIPCheckSources(['unknown-source']), [...DEFAULT_IP_CHECK_SOURCES]);
-  assert.deepEqual(normalizeIPCheckSources(undefined), [...DEFAULT_IP_CHECK_SOURCES]);
+  assert.deepEqual(normalizeIPCheckSources(['unknown-source']), [
+    'cip.cc',
+    'ipip',
+    'ip.sb',
+    'icanhazip',
+  ]);
+  assert.deepEqual(normalizeIPCheckSources(undefined), ['cip.cc', 'ipip', 'ip.sb', 'icanhazip']);
+  assert.deepEqual([...DEFAULT_IP_CHECK_SOURCES], ['cip.cc', 'ipip', 'ip.sb', 'icanhazip']);
 });

@@ -7,7 +7,7 @@ import https from 'node:https';
 import { DEFAULT_IP_CHECK_SOURCES, normalizeIPCheckSources } from '../ip-check-sources';
 import { logger } from './logger';
 import { createIPCheckSources, type IPCheckSource } from './ip-monitor-sources';
-import { isValidIPv4, selectMostCommonIP } from './ip-monitor-utils';
+import { getSourceFailureLogLevel, isValidIPv4, selectMostCommonIP } from './ip-monitor-utils';
 
 export interface IPChangeEvent {
   oldIP: string;
@@ -231,8 +231,17 @@ export class IPMonitor extends EventEmitter {
       } catch (error: unknown) {
         const { code: errorCode, message: errorMsg } = getErrorDetails(error);
         errors.push(`${source.name}: ${errorCode} - ${errorMsg}`);
+        const sourceFailureLogLevel = getSourceFailureLogLevel(
+          results.length === 0 && errors.length === activeSources.length
+        );
+        const logSourceFailure = {
+          error:
+            sourceFailureLogLevel === 'ERROR'
+              ? logger.error.bind(logger)
+              : logger.warning.bind(logger),
+        };
 
-        logger
+        logSourceFailure
           .error('IP监控', `从 ${source.name} 获取IP失败: ${errorMsg} (错误码: ${errorCode})`)
           .catch(() => {});
       }
@@ -277,7 +286,7 @@ export class IPMonitor extends EventEmitter {
           await new Promise((resolve) => setTimeout(resolve, waitTime));
         } else {
           logger
-            .error(
+            .warning(
               'IP监控',
               `${source.name} 所有重试均失败 - 错误码: ${errorCode}, Syscall: ${syscall}, Errno: ${errnoDescription}`
             )
