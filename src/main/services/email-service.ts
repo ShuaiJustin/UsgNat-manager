@@ -31,6 +31,8 @@ export interface SMTPConfig {
   host: string;
   port: number;
   secure: boolean; // true for 465, false for other ports
+  requireTLS?: boolean;
+  ignoreTLS?: boolean;
   auth: {
     user: string;
     pass: string;

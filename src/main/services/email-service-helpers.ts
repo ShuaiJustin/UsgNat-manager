@@ -3,6 +3,8 @@ type SMTPConfigLike = {
   host: string;
   port: number;
   secure: boolean;
+  requireTLS?: boolean;
+  ignoreTLS?: boolean;
   auth: {
     user: string;
     pass: string;
@@ -19,6 +21,8 @@ type BaseTransportConfig = {
   host: string;
   port: number;
   secure: boolean;
+  requireTLS?: boolean;
+  ignoreTLS?: boolean;
   auth: {
     user: string;
     pass: string;
@@ -90,6 +94,8 @@ export const createBaseTransportConfig = (config: SMTPConfigLike): BaseTransport
   host: config.host,
   port: config.port,
   secure: config.secure,
+  ...(config.requireTLS ? { requireTLS: true } : {}),
+  ...(config.ignoreTLS ? { ignoreTLS: true } : {}),
   auth: {
     user: config.auth.user,
     pass: config.auth.pass,

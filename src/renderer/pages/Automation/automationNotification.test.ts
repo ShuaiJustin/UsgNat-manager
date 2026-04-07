@@ -11,6 +11,7 @@ test('builds persisted automation email config with defaults and normalized reci
     {
       smtpServer: 'smtp.example.com',
       smtpPort: '465',
+      smtpEncryption: 'ssl',
       smtpUsername: 'alerts@example.com',
       smtpPassword: 'secret',
       senderEmail: 'noreply@example.com',
@@ -38,10 +39,47 @@ test('builds persisted automation email config with defaults and normalized reci
   });
 });
 
+test('builds persisted automation email config with explicit STARTTLS and plain-text modes', () => {
+  const startTlsConfig = buildAutomationEmailConfig(
+    {
+      smtpServer: 'smtp.example.com',
+      smtpPort: '587',
+      smtpEncryption: 'starttls',
+      smtpUsername: 'alerts@example.com',
+      smtpPassword: 'secret',
+      senderEmail: 'noreply@example.com',
+      recipientEmails: 'admin@example.com',
+    },
+    true
+  );
+
+  assert.equal(startTlsConfig.secure, false);
+  assert.equal(startTlsConfig.requireTLS, true);
+  assert.equal(startTlsConfig.ignoreTLS, undefined);
+
+  const plainConfig = buildAutomationEmailConfig(
+    {
+      smtpServer: 'smtp.example.com',
+      smtpPort: '25',
+      smtpEncryption: 'none',
+      smtpUsername: 'alerts@example.com',
+      smtpPassword: 'secret',
+      senderEmail: 'noreply@example.com',
+      recipientEmails: 'admin@example.com',
+    },
+    true
+  );
+
+  assert.equal(plainConfig.secure, false);
+  assert.equal(plainConfig.requireTLS, undefined);
+  assert.equal(plainConfig.ignoreTLS, true);
+});
+
 test('builds test email config only when required fields and recipients are present', () => {
   const config = buildAutomationTestEmailConfig({
     smtpServer: ' smtp.example.com ',
     smtpPort: '587',
+    smtpEncryption: 'starttls',
     smtpUsername: ' alerts@example.com ',
     smtpPassword: 'secret',
     senderEmail: ' noreply@example.com ',
@@ -54,6 +92,7 @@ test('builds test email config only when required fields and recipients are pres
     host: 'smtp.example.com',
     port: 587,
     secure: false,
+    requireTLS: true,
     auth: {
       user: 'alerts@example.com',
       pass: 'secret',

@@ -90,6 +90,8 @@ type EmailConfigPayload = {
   host: string;
   port: number;
   secure: boolean;
+  requireTLS?: boolean;
+  ignoreTLS?: boolean;
   auth: {
     user: string;
     pass: string;

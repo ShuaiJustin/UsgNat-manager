@@ -3,6 +3,7 @@ import test from 'node:test';
 
 import {
   DEFAULT_AUTOMATION_CHECK_SOURCES,
+  hasSelectedAutomationCheckSources,
   hasSelectedAutomationDevices,
   normalizeAutomationCheckSources,
 } from './automationConfig.ts';
@@ -31,4 +32,12 @@ test('requires a selected device only when auto-update is enabled', () => {
   assert.equal(hasSelectedAutomationDevices(false, []), true);
   assert.equal(hasSelectedAutomationDevices(true, []), false);
   assert.equal(hasSelectedAutomationDevices(true, ['device-1']), true);
+});
+
+test('requires at least one supported check source only when IP monitoring is enabled', () => {
+  assert.equal(hasSelectedAutomationCheckSources(false, []), true);
+  assert.equal(hasSelectedAutomationCheckSources(true, []), false);
+  assert.equal(hasSelectedAutomationCheckSources(true, ['not-supported']), false);
+  assert.equal(hasSelectedAutomationCheckSources(true, ['ipify']), true);
+  assert.equal(hasSelectedAutomationCheckSources(true, ['cip']), true);
 });

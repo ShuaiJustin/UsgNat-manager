@@ -154,7 +154,7 @@ export class IPMonitor extends EventEmitter {
 
   async checkIP(): Promise<string> {
     try {
-      const ip = await this.getCurrentIP();
+      const ip = await this.fetchCurrentIP();
 
       if (!ip) {
         this.emit('error', new Error('无法获取公网IP'));
@@ -209,7 +209,7 @@ export class IPMonitor extends EventEmitter {
     }
   }
 
-  private async getCurrentIP(): Promise<string> {
+  async fetchCurrentIP(): Promise<string> {
     const activeSources = this.config.sources
       .map((name) => this.sources.get(name))
       .filter((source): source is IPCheckSource => source !== undefined);

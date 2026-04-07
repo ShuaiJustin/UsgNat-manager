@@ -19,6 +19,7 @@ import { useTranslation } from 'react-i18next';
 
 import type { Device, Log } from '@/types';
 import { useMonitorStore } from '@/stores/monitor.store';
+import { startMonitoringService, stopMonitoringService } from '@/utils/monitorControl';
 
 type AutomationDashboardConfig = {
   checkInterval?: number;
@@ -108,7 +109,11 @@ const Dashboard: React.FC = () => {
       if (!api?.monitor?.start) {
         throw new Error('monitor API 未就绪');
       }
-      const result = await api.monitor.start();
+      if (!api) {
+        throw new Error('monitor API unavailable');
+      }
+
+      const result = await startMonitoringService(api);
       if (!result.success) {
         throw new Error(result.error || t('common.error'));
       }
@@ -129,7 +134,11 @@ const Dashboard: React.FC = () => {
       if (!api?.monitor?.stop) {
         throw new Error('monitor API 未就绪');
       }
-      const result = await api.monitor.stop();
+      if (!api) {
+        throw new Error('monitor API unavailable');
+      }
+
+      const result = await stopMonitoringService(api);
       if (!result.success) {
         throw new Error(result.error || t('common.error'));
       }

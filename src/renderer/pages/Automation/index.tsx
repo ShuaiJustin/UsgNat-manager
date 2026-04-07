@@ -1,65 +1,32 @@
 import React, { useEffect, useState } from 'react';
 import { Alert, App, Button, Form, Space, Tabs } from 'antd';
-import type { Dayjs } from 'dayjs';
 import { useTranslation } from 'react-i18next';
 
 import type { Device } from '@/types';
 import {
-  DEFAULT_AUTOMATION_CHECK_SOURCES,
+  hasSelectedAutomationCheckSources,
   hasSelectedAutomationDevices,
   normalizeAutomationCheckSources,
 } from '@/utils/automationConfig';
 import { ensureIpcSuccess } from '@/utils/ipcResult';
 import { DEFAULT_AUTOMATION_FORM_VALUES } from './automationDefaults';
 import {
+  buildAutomationFormSnapshot,
+  createAutomationFormSnapshot,
+  type AutomationFormSnapshot,
+  type AutomationFormValues,
+  type StoredAutomationConfig,
+  type StoredEmailConfig,
+} from './automationFormState';
+import {
   buildAutomationEmailConfig,
   buildAutomationTestEmailConfig,
 } from './automationNotification';
-import { formatScheduledTime, parseScheduledTime } from './automationTime';
+import { formatScheduledTime } from './automationTime';
 import AutomationMonitorSection from './components/AutomationMonitorSection';
 import AutomationNotifySection from './components/AutomationNotifySection';
 import AutomationSummaryStats from './components/AutomationSummaryStats';
 import AutomationUpdateSection from './components/AutomationUpdateSection';
-
-type AutomationFormValues = {
-  ipMonitorEnabled?: boolean;
-  checkInterval?: number;
-  confirmCount?: number;
-  checkSources?: string[];
-  autoUpdateEnabled?: boolean;
-  triggerType?: string;
-  delayMinutes?: number;
-  scheduledTime?: Dayjs | string | null;
-  selectedDevices?: string[];
-  backupOptions?: string[];
-  backupKeepCount?: number;
-  securityOptions?: string[];
-  windowsNotifyEnabled?: boolean;
-  notifyTypes?: string[];
-  smtpServer?: string;
-  smtpPort?: string;
-  smtpEncryption?: string;
-  smtpUsername?: string;
-  smtpPassword?: string;
-  senderEmail?: string;
-  senderName?: string;
-  recipientEmails?: string;
-  emailNotifyTypes?: string[];
-  wechatNotifyEnabled?: boolean;
-  wechatType?: string;
-  corpId?: string;
-  corpSecret?: string;
-  agentId?: string;
-  webhookUrl?: string;
-  appId?: string;
-  appSecret?: string;
-  templateId?: string;
-};
-
-type StoredAutomationConfig = AutomationFormValues & {
-  emailNotifyEnabled?: boolean;
-  wechatNotifyEnabled?: boolean;
-};
 
 type AutomationStatus = {
   isMonitoring?: boolean;
@@ -82,6 +49,9 @@ const Automation: React.FC = () => {
   const [formValues, setFormValues] = useState<AutomationFormValues>({
     ...DEFAULT_AUTOMATION_FORM_VALUES,
   });
+  const [resetSnapshot, setResetSnapshot] = useState<AutomationFormSnapshot>(() =>
+    buildAutomationFormSnapshot({})
+  );
 
   useEffect(() => {
     const loadData = async () => {
@@ -97,86 +67,24 @@ const Automation: React.FC = () => {
           return;
         }
 
-        form.setFieldsValue({
-          checkSources: [...DEFAULT_AUTOMATION_CHECK_SOURCES],
+        const [automationConfig, emailConfig] = await Promise.all([
+          api.config.get<StoredAutomationConfig>('automation'),
+          api.config.get<StoredEmailConfig>('email'),
+        ]);
+
+        const snapshot = buildAutomationFormSnapshot({
+          automationConfig,
+          emailConfig,
         });
 
-        const automationConfig = await api.config.get<StoredAutomationConfig>('automation');
-        if (automationConfig) {
-          if (automationConfig.emailNotifyEnabled !== undefined) {
-            setEmailNotifyEnabled(automationConfig.emailNotifyEnabled);
-          }
-          if (automationConfig.wechatNotifyEnabled !== undefined) {
-            setWechatNotifyEnabled(automationConfig.wechatNotifyEnabled);
-          }
-          if (automationConfig.wechatType) {
-            setWechatType(automationConfig.wechatType);
-          }
-
-          form.setFieldsValue({
-            ipMonitorEnabled: automationConfig.ipMonitorEnabled,
-            checkInterval: automationConfig.checkInterval,
-            confirmCount: automationConfig.confirmCount,
-            checkSources: normalizeAutomationCheckSources(automationConfig.checkSources),
-            autoUpdateEnabled: automationConfig.autoUpdateEnabled ?? false,
-            triggerType: automationConfig.triggerType,
-            delayMinutes: automationConfig.delayMinutes,
-            scheduledTime: parseScheduledTime(automationConfig.scheduledTime),
-            selectedDevices: automationConfig.selectedDevices,
-            backupOptions: automationConfig.backupOptions,
-            backupKeepCount: automationConfig.backupKeepCount,
-            securityOptions: automationConfig.securityOptions,
-            windowsNotifyEnabled: automationConfig.windowsNotifyEnabled,
-            notifyTypes: automationConfig.notifyTypes || [
-              'ipChange',
-              'updateSuccess',
-              'updateFailed',
-            ],
-            smtpServer: automationConfig.smtpServer,
-            smtpPort: automationConfig.smtpPort,
-            smtpEncryption: automationConfig.smtpEncryption,
-            smtpUsername: automationConfig.smtpUsername,
-            smtpPassword: automationConfig.smtpPassword,
-            senderEmail: automationConfig.senderEmail,
-            senderName: automationConfig.senderName,
-            recipientEmails: automationConfig.recipientEmails,
-            emailNotifyTypes: automationConfig.emailNotifyTypes,
-            wechatType: automationConfig.wechatType,
-            corpId: automationConfig.corpId,
-            corpSecret: automationConfig.corpSecret,
-            agentId: automationConfig.agentId,
-            webhookUrl: automationConfig.webhookUrl,
-            appId: automationConfig.appId,
-            appSecret: automationConfig.appSecret,
-            templateId: automationConfig.templateId,
-          });
-        }
-
-        const emailConfig = await api.config.get<{
-          enabled?: boolean;
-          host?: string;
-          port?: number;
-          auth?: { user?: string; pass?: string };
-          from?: { address?: string; name?: string };
-          to?: string[];
-          notifyTypes?: string[];
-        }>('email');
-
-        if (emailConfig) {
-          setEmailNotifyEnabled(emailConfig.enabled || false);
-          if (emailConfig.host) {
-            form.setFieldsValue({
-              smtpServer: emailConfig.host,
-              smtpPort: String(emailConfig.port || 465),
-              smtpUsername: emailConfig.auth?.user || '',
-              smtpPassword: emailConfig.auth?.pass || '',
-              senderEmail: emailConfig.from?.address || '',
-              senderName: emailConfig.from?.name || '',
-              recipientEmails: emailConfig.to?.join(', ') || '',
-              emailNotifyTypes: emailConfig.notifyTypes || [],
-            });
-          }
-        }
+        form.setFieldsValue(snapshot.formValues);
+        setFormValues(snapshot.formValues);
+        setResetSnapshot(snapshot);
+        setEmailNotifyEnabled(snapshot.emailNotifyEnabled);
+        setWechatNotifyEnabled(snapshot.wechatNotifyEnabled);
+        setWechatType(snapshot.wechatType);
+        setSmtpPasswordVisible(!snapshot.formValues.smtpPassword);
+        setHasUnsavedChanges(false);
       } catch {
         // Ignore load failures and keep defaults.
       }
@@ -184,6 +92,16 @@ const Automation: React.FC = () => {
 
     void loadData();
   }, [form]);
+
+  const handleReset = () => {
+    form.setFieldsValue(resetSnapshot.formValues);
+    setFormValues(resetSnapshot.formValues);
+    setEmailNotifyEnabled(resetSnapshot.emailNotifyEnabled);
+    setWechatNotifyEnabled(resetSnapshot.wechatNotifyEnabled);
+    setWechatType(resetSnapshot.wechatType);
+    setSmtpPasswordVisible(!resetSnapshot.formValues.smtpPassword);
+    setHasUnsavedChanges(false);
+  };
 
   const handleSave = async () => {
     try {
@@ -196,10 +114,19 @@ const Automation: React.FC = () => {
       }
 
       const scheduledTime = formatScheduledTime(values.scheduledTime);
+      const ipMonitorEnabled = values.ipMonitorEnabled !== false;
       const normalizedCheckSources = normalizeAutomationCheckSources(values.checkSources);
 
       if (
-        values.ipMonitorEnabled &&
+        ipMonitorEnabled &&
+        !hasSelectedAutomationCheckSources(ipMonitorEnabled, values.checkSources)
+      ) {
+        message.warning(t('automation.selectCheckSources'));
+        return;
+      }
+
+      if (
+        ipMonitorEnabled &&
         !hasSelectedAutomationDevices(!!values.autoUpdateEnabled, values.selectedDevices)
       ) {
         message.warning(t('automation.selectDevices'));
@@ -227,7 +154,7 @@ const Automation: React.FC = () => {
       const status = api.automation?.getStatus
         ? await api.automation.getStatus<AutomationStatus>()
         : null;
-      if (values.ipMonitorEnabled) {
+      if (ipMonitorEnabled) {
         if (
           values.autoUpdateEnabled &&
           (!values.selectedDevices || values.selectedDevices.length === 0)
@@ -273,8 +200,19 @@ const Automation: React.FC = () => {
         message.success(t('common.success'));
       }
 
+      const nextSnapshot = createAutomationFormSnapshot(
+        form.getFieldsValue(true) as AutomationFormValues,
+        {
+          emailNotifyEnabled,
+          wechatNotifyEnabled,
+          wechatType,
+        }
+      );
+
+      setResetSnapshot(nextSnapshot);
+      setFormValues(nextSnapshot.formValues);
       setHasUnsavedChanges(false);
-      setSmtpPasswordVisible(false);
+      setSmtpPasswordVisible(!nextSnapshot.formValues.smtpPassword);
     } catch (error) {
       message.error(`${t('common.error')}: ${getErrorMessage(error, t('common.error'))}`);
     } finally {
@@ -406,7 +344,7 @@ const Automation: React.FC = () => {
                 />
               )}
               <Space>
-                <Button onClick={() => form.resetFields()} disabled={loading}>
+                <Button onClick={handleReset} disabled={loading}>
                   {t('common.reset')}
                 </Button>
                 <Button type="primary" onClick={() => void handleSave()} loading={loading}>

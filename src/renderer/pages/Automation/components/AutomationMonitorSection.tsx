@@ -8,44 +8,67 @@ interface AutomationMonitorSectionProps {
   t: TFunction;
 }
 
-const AutomationMonitorSection: React.FC<AutomationMonitorSectionProps> = ({ t }) => (
-  <Card title={t('automation.ipMonitoring')} style={{ marginBottom: 24 }}>
-    <Form.Item
-      label={t('automation.enableMonitoring')}
-      name="ipMonitorEnabled"
-      valuePropName="checked"
-    >
-      <Switch />
-    </Form.Item>
+const AutomationMonitorSection: React.FC<AutomationMonitorSectionProps> = ({ t }) => {
+  const ipMonitorEnabled = Form.useWatch<boolean>('ipMonitorEnabled');
+  const monitorEnabled = ipMonitorEnabled !== false;
 
-    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
+  return (
+    <Card title={t('automation.ipMonitoring')} style={{ marginBottom: 24 }}>
       <Form.Item
-        label={t('automation.checkInterval')}
-        name="checkInterval"
-        rules={[{ required: true }]}
-        extra="建议: 5-30分钟"
+        label={t('automation.enableMonitoring')}
+        name="ipMonitorEnabled"
+        valuePropName="checked"
       >
-        <InputNumber min={1} max={60} style={{ width: '100%' }} />
+        <Switch />
       </Form.Item>
 
-      <Form.Item
-        label={t('automation.confirmCount')}
-        name="confirmCount"
-        rules={[{ required: true }]}
-        extra="连续检测到相同IP后确认变更"
-      >
-        <InputNumber min={1} max={10} style={{ width: '100%' }} />
-      </Form.Item>
-    </div>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
+        <Form.Item
+          label={t('automation.checkInterval')}
+          name="checkInterval"
+          required={monitorEnabled}
+          rules={monitorEnabled ? [{ required: true }] : []}
+          extra={t('automation.checkIntervalHint')}
+        >
+          <InputNumber min={1} max={60} style={{ width: '100%' }} disabled={!monitorEnabled} />
+        </Form.Item>
 
-    <Form.Item
-      label={t('automation.checkSources')}
-      name="checkSources"
-      extra="选择用于检测公网IP的数据源，建议保持默认值"
-    >
-      <Checkbox.Group options={AUTOMATION_CHECK_SOURCE_OPTIONS} />
-    </Form.Item>
-  </Card>
-);
+        <Form.Item
+          label={t('automation.confirmCount')}
+          name="confirmCount"
+          required={monitorEnabled}
+          rules={monitorEnabled ? [{ required: true }] : []}
+          extra={t('automation.confirmCountHint')}
+        >
+          <InputNumber min={1} max={10} style={{ width: '100%' }} disabled={!monitorEnabled} />
+        </Form.Item>
+      </div>
+
+      <Form.Item
+        label={t('automation.checkSources')}
+        name="checkSources"
+        required={monitorEnabled}
+        rules={
+          monitorEnabled
+            ? [
+                {
+                  validator: async (_rule, value: string[] | undefined) => {
+                    if (Array.isArray(value) && value.length > 0) {
+                      return;
+                    }
+
+                    throw new Error(t('automation.selectCheckSources'));
+                  },
+                },
+              ]
+            : []
+        }
+        extra={t('automation.checkSourcesHint')}
+      >
+        <Checkbox.Group options={AUTOMATION_CHECK_SOURCE_OPTIONS} disabled={!monitorEnabled} />
+      </Form.Item>
+    </Card>
+  );
+};
 
 export default AutomationMonitorSection;

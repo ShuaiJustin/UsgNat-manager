@@ -79,6 +79,46 @@ test('createBaseTransportConfig builds the shared SMTP transport shape', () => {
   });
 });
 
+test('createBaseTransportConfig preserves STARTTLS and plain-text flags when provided', () => {
+  assert.deepEqual(
+    createBaseTransportConfig(
+      createConfig({
+        secure: false,
+        requireTLS: true,
+      })
+    ),
+    {
+      host: 'smtp.example.com',
+      port: 465,
+      secure: false,
+      requireTLS: true,
+      auth: {
+        user: 'admin@example.com',
+        pass: 'secret',
+      },
+    }
+  );
+
+  assert.deepEqual(
+    createBaseTransportConfig(
+      createConfig({
+        secure: false,
+        ignoreTLS: true,
+      })
+    ),
+    {
+      host: 'smtp.example.com',
+      port: 465,
+      secure: false,
+      ignoreTLS: true,
+      auth: {
+        user: 'admin@example.com',
+        pass: 'secret',
+      },
+    }
+  );
+});
+
 test('createTestTransportConfig extends the base transport config with safe timeouts', () => {
   assert.deepEqual(createTestTransportConfig(createConfig()), {
     host: 'smtp.example.com',

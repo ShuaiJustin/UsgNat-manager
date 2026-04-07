@@ -3,6 +3,7 @@ import { ipcMain } from 'electron';
 import { type Credential, credentialManager } from '../../services/credential-manager';
 import { ipMonitor } from '../../services/ip-monitor';
 import { type LogQueryFilter, logger } from '../../services/logger';
+import { resolveCurrentMonitorIP } from './monitor-handler-helpers';
 import { getErrorMessage } from './shared';
 
 export function registerMonitorHandlers() {
@@ -49,11 +50,11 @@ export function registerMonitorHandlers() {
   });
 
   ipcMain.handle('monitor:getCurrentIP', async () => {
-    try {
-      return await ipMonitor.checkIP();
-    } catch {
-      return '0.0.0.0';
-    }
+    return resolveCurrentMonitorIP({
+      isMonitoring: ipMonitor.isMonitoring(),
+      currentIP: ipMonitor.getCurrentIPSync(),
+      fetchCurrentIP: () => ipMonitor.fetchCurrentIP(),
+    });
   });
 
   ipcMain.handle(

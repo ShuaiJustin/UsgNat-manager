@@ -16,6 +16,12 @@ import { useTranslation } from 'react-i18next';
 import type { Device, NatRule } from '@/types';
 import { createTablePagination } from '@/utils/tablePagination';
 import RuleModal from './RuleModal';
+import {
+  buildRulesCsv,
+  resolveActiveRuleDeviceId,
+  resolveCurrentRuleDevice,
+  shouldShowRuleBatchActions,
+} from './rulePageHelpers';
 
 const getErrorMessage = (error: unknown, fallback: string): string =>
   error instanceof Error ? error.message : fallback;
@@ -28,7 +34,6 @@ const Rules: React.FC = () => {
   const [selectedRowKeys, setSelectedRowKeys] = useState<React.Key[]>([]);
   const [protocolFilter, setProtocolFilter] = useState<string>('all');
   const [statusFilter, setStatusFilter] = useState<string>('all');
-  const [showBatchMenu, setShowBatchMenu] = useState(false);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingRule, setEditingRule] = useState<NatRule | null>(null);
   const queryClient = useQueryClient();
@@ -46,7 +51,7 @@ const Rules: React.FC = () => {
     retry: 2,
   });
 
-  const activeDeviceId = selectedDeviceId || devices?.[0]?.id || '';
+  const activeDeviceId = resolveActiveRuleDeviceId(devices, selectedDeviceId);
 
   const { data: rules, isLoading } = useQuery<NatRule[]>({
     queryKey: ['rules', activeDeviceId],
@@ -293,8 +298,8 @@ const Rules: React.FC = () => {
       return;
     }
 
-    const selectedRules = rules?.filter((rule) => selectedRowKeys.includes(rule.id));
-    const csv = [
+    const selectedRules = rules?.filter((rule) => selectedRowKeys.includes(rule.id)) ?? [];
+    const csv = buildRulesCsv(
       [
         t('rules.ruleName'),
         t('rules.protocol'),
@@ -304,20 +309,11 @@ const Rules: React.FC = () => {
         t('rules.insidePort'),
         t('devices.status'),
         t('devices.description'),
-      ].join(','),
-      ...(selectedRules || []).map((rule) =>
-        [
-          rule.ruleName,
-          rule.protocol,
-          rule.globalIp,
-          rule.globalPort,
-          rule.insideIp,
-          rule.insidePort,
-          rule.enabled ? t('rules.enabled') : t('rules.disabled'),
-          rule.description || '',
-        ].join(',')
-      ),
-    ].join('\n');
+      ],
+      selectedRules,
+      t('rules.enabled'),
+      t('rules.disabled')
+    );
 
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
@@ -357,7 +353,7 @@ const Rules: React.FC = () => {
     });
   };
 
-  const currentDevice = devices?.find((device) => device.id === selectedDeviceId);
+  const currentDevice = resolveCurrentRuleDevice(devices, activeDeviceId);
 
   return (
     <div>
@@ -380,7 +376,6 @@ const Rules: React.FC = () => {
                 onChange={(nextDeviceId) => {
                   setSelectedDeviceId(nextDeviceId);
                   setSelectedRowKeys([]);
-                  setShowBatchMenu(false);
                 }}
               >
                 {devices?.map((device) => (
@@ -471,7 +466,7 @@ const Rules: React.FC = () => {
                   return;
                 }
 
-                const csv = [
+                const csv = buildRulesCsv(
                   [
                     t('rules.ruleName'),
                     t('rules.protocol'),
@@ -481,20 +476,11 @@ const Rules: React.FC = () => {
                     t('rules.insidePort'),
                     t('devices.status'),
                     t('devices.description'),
-                  ].join(','),
-                  ...rules.map((rule) =>
-                    [
-                      rule.ruleName,
-                      rule.protocol,
-                      rule.globalIp,
-                      rule.globalPort,
-                      rule.insideIp,
-                      rule.insidePort,
-                      rule.enabled ? t('rules.enabled') : t('rules.disabled'),
-                      rule.description || '',
-                    ].join(',')
-                  ),
-                ].join('\n');
+                  ],
+                  rules,
+                  t('rules.enabled'),
+                  t('rules.disabled')
+                );
 
                 const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
                 const url = URL.createObjectURL(blob);
@@ -532,6 +518,34 @@ const Rules: React.FC = () => {
             </div>
           )}
 
+          {shouldShowRuleBatchActions(selectedRowKeys.length) && (
+            <div
+              style={{
+                padding: '12px 16px',
+                background: '#fff7e6',
+                borderRadius: 6,
+                border: '1px solid #ffd591',
+              }}
+            >
+              <Space style={{ width: '100%', justifyContent: 'space-between' }} align="center" wrap>
+                <span style={{ color: '#8c5a13', fontWeight: 500 }}>
+                  {t('common.info')}: {selectedRowKeys.length}
+                </span>
+                <Space wrap>
+                  <Button type="primary" onClick={handleBatchUpdateIP}>
+                    {t('rules.batchUpdate')}
+                  </Button>
+                  <Button onClick={() => void handleBatchEnable()}>{t('rules.enabled')}</Button>
+                  <Button onClick={() => void handleBatchDisable()}>{t('rules.disabled')}</Button>
+                  <Button onClick={handleBatchExport}>{t('common.export')}</Button>
+                  <Button danger onClick={handleBatchDelete}>
+                    {t('common.delete')}
+                  </Button>
+                </Space>
+              </Space>
+            </div>
+          )}
+
           <Table
             rowSelection={{
               selectedRowKeys,
@@ -542,58 +556,7 @@ const Rules: React.FC = () => {
             loading={isLoading}
             rowKey="id"
             pagination={createTablePagination(10, t('common.info'))}
-            footer={() => (
-              <Space style={{ width: '100%', justifyContent: 'space-between' }}>
-                <Space>
-                  <span>
-                    {t('common.info')}: {selectedRowKeys.length}
-                  </span>
-                  <Button size="small" onClick={() => setShowBatchMenu(!showBatchMenu)}>
-                    {t('rules.batchUpdate')} {showBatchMenu ? '▲' : '▼'}
-                  </Button>
-                </Space>
-              </Space>
-            )}
           />
-
-          {showBatchMenu && (
-            <div
-              style={{
-                padding: 12,
-                background: '#f5f5f5',
-                borderRadius: 6,
-                border: '1px solid #e0e0e0',
-              }}
-            >
-              <Space wrap>
-                <Button
-                  type="primary"
-                  onClick={handleBatchUpdateIP}
-                  disabled={selectedRowKeys.length === 0}
-                >
-                  {t('rules.batchUpdate')}
-                </Button>
-                <Button
-                  onClick={() => void handleBatchEnable()}
-                  disabled={selectedRowKeys.length === 0}
-                >
-                  {t('rules.enabled')}
-                </Button>
-                <Button
-                  onClick={() => void handleBatchDisable()}
-                  disabled={selectedRowKeys.length === 0}
-                >
-                  {t('rules.disabled')}
-                </Button>
-                <Button onClick={handleBatchExport} disabled={selectedRowKeys.length === 0}>
-                  {t('common.export')}
-                </Button>
-                <Button danger onClick={handleBatchDelete} disabled={selectedRowKeys.length === 0}>
-                  {t('common.delete')}
-                </Button>
-              </Space>
-            </div>
-          )}
         </Space>
       </Card>
 

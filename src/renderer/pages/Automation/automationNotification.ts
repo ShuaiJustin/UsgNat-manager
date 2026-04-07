@@ -1,6 +1,7 @@
 type AutomationEmailValues = {
   smtpServer?: string;
   smtpPort?: string;
+  smtpEncryption?: string;
   smtpUsername?: string;
   smtpPassword?: string;
   senderEmail?: string;
@@ -14,6 +15,8 @@ type AutomationEmailBaseConfig = {
   host: string;
   port: number;
   secure: boolean;
+  requireTLS?: boolean;
+  ignoreTLS?: boolean;
   auth: {
     user: string;
     pass: string;
@@ -39,6 +42,31 @@ const normalizeRecipients = (recipientEmails?: string): string[] =>
     .map((email) => email.trim())
     .filter(Boolean) ?? [];
 
+const resolveTransportSecurity = (
+  smtpPort?: string,
+  smtpEncryption?: string
+): Pick<AutomationEmailBaseConfig, 'secure' | 'requireTLS' | 'ignoreTLS'> => {
+  const normalizedMode = smtpEncryption || (smtpPort === '465' ? 'ssl' : 'starttls');
+
+  if (normalizedMode === 'ssl') {
+    return {
+      secure: true,
+    };
+  }
+
+  if (normalizedMode === 'none') {
+    return {
+      secure: false,
+      ignoreTLS: true,
+    };
+  }
+
+  return {
+    secure: false,
+    requireTLS: true,
+  };
+};
+
 export const buildAutomationEmailConfig = (
   values: AutomationEmailValues,
   enabled: boolean
@@ -46,7 +74,7 @@ export const buildAutomationEmailConfig = (
   enabled,
   host: values.smtpServer || '',
   port: parseInt(values.smtpPort || '', 10) || 465,
-  secure: values.smtpPort === '465',
+  ...resolveTransportSecurity(values.smtpPort, values.smtpEncryption),
   auth: {
     user: values.smtpUsername || '',
     pass: values.smtpPassword || '',
@@ -81,7 +109,7 @@ export const buildAutomationTestEmailConfig = (
     enabled: true,
     host: smtpServer,
     port: parseInt(smtpPort, 10) || 465,
-    secure: smtpPort === '465',
+    ...resolveTransportSecurity(smtpPort, values.smtpEncryption),
     auth: {
       user: smtpUsername,
       pass: smtpPassword,

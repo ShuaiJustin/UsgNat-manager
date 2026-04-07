@@ -1,4 +1,4 @@
-import { normalizeAutomationCheckSources } from '@/utils/automationConfig';
+import { normalizeAutomationCheckSources } from '../../utils/automationConfig.ts';
 
 export const DEFAULT_AUTOMATION_FORM_VALUES = {
   ipMonitorEnabled: true,
@@ -13,5 +13,6 @@ export const DEFAULT_AUTOMATION_FORM_VALUES = {
   securityOptions: [],
   windowsNotifyEnabled: true,
   notifyTypes: ['ipChange', 'updateSuccess', 'updateFailed'],
+  smtpEncryption: 'ssl',
   smtpPort: '465',
 };

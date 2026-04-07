@@ -20,6 +20,7 @@ import Settings from './pages/Settings';
 import { useAppStore } from './stores/app.store';
 import type { LanguageType } from './stores/app.store';
 import { useMonitorStore } from './stores/monitor.store';
+import { startMonitoringService, stopMonitoringService } from './utils/monitorControl';
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -84,10 +85,13 @@ function App() {
 
     const handleMonitorStart = async () => {
       try {
-        const result = await api.monitor.start();
+        const result = await startMonitoringService(api);
         if (result?.success) {
           startMonitor();
+          return;
         }
+
+        throw new Error(result?.error || 'monitor start failed');
       } catch (error) {
         console.error('托盘启动监控失败:', error);
       }
@@ -95,10 +99,13 @@ function App() {
 
     const handleMonitorStop = async () => {
       try {
-        const result = await api.monitor.stop();
+        const result = await stopMonitoringService(api);
         if (result?.success) {
           stopMonitor();
+          return;
         }
+
+        throw new Error(result?.error || 'monitor stop failed');
       } catch (error) {
         console.error('托盘停止监控失败:', error);
       }

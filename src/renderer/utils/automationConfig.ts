@@ -32,3 +32,16 @@ export const hasSelectedAutomationDevices = (
   autoUpdateEnabled: boolean,
   selectedDevices?: readonly string[] | null
 ): boolean => !autoUpdateEnabled || (selectedDevices?.length ?? 0) > 0;
+
+export const hasSelectedAutomationCheckSources = (
+  ipMonitorEnabled: boolean,
+  selectedSources?: readonly string[] | null
+): boolean => {
+  if (!ipMonitorEnabled) {
+    return true;
+  }
+
+  return (selectedSources ?? [])
+    .map((source) => SOURCE_ALIASES[source] ?? source)
+    .some((source) => SUPPORTED_AUTOMATION_CHECK_SOURCES.has(source));
+};

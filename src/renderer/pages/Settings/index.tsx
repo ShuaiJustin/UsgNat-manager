@@ -6,6 +6,8 @@ import { useTranslation } from 'react-i18next';
 
 import { useAppStore } from '@/stores/app.store';
 import { ensureIpcSuccess } from '@/utils/ipcResult';
+import { startMonitoringService, stopMonitoringService } from '@/utils/monitorControl';
+import { buildSettingsFormSnapshot, DEFAULT_SETTINGS_FORM_VALUES } from './settingsFormState';
 import type {
   SettingsAppConfig,
   SettingsDatabaseInfo,
@@ -16,18 +18,6 @@ import SettingsDataTab from './components/SettingsDataTab';
 import SettingsGeneralTab from './components/SettingsGeneralTab';
 import SettingsOverviewStats from './components/SettingsOverviewStats';
 import SettingsSecurityTab from './components/SettingsSecurityTab';
-
-const DEFAULT_SETTINGS_FORM_VALUES: SettingsFormValues = {
-  scale: '100',
-  language: 'zh-CN',
-  autoStart: true,
-  logRetentionDays: 30,
-  useWindowsCredentials: true,
-  encryptSensitiveData: true,
-  requirePasswordOnStartup: false,
-  logAllOperations: true,
-  writeToWindowsEventLog: true,
-};
 
 const DEFAULT_DATABASE_INFO: SettingsDatabaseInfo = {
   path: '加载中...',
@@ -44,6 +34,7 @@ const Settings: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
   const [formValues, setFormValues] = useState<SettingsFormValues>(DEFAULT_SETTINGS_FORM_VALUES);
+  const [resetValues, setResetValues] = useState<SettingsFormValues>(DEFAULT_SETTINGS_FORM_VALUES);
   const [databaseInfo, setDatabaseInfo] = useState<SettingsDatabaseInfo>(DEFAULT_DATABASE_INFO);
   const { setScale, setLanguage } = useAppStore();
 
@@ -59,18 +50,16 @@ const Settings: React.FC = () => {
             : Promise.resolve(DEFAULT_SETTINGS_FORM_VALUES.autoStart),
         ]);
 
-        const nextValues: SettingsFormValues = {
-          ...DEFAULT_SETTINGS_FORM_VALUES,
-          ...appConfig,
-          autoStart,
-        };
+        const nextValues = buildSettingsFormSnapshot(appConfig, autoStart);
 
         form.setFieldsValue(nextValues);
         setFormValues(nextValues);
+        setResetValues(nextValues);
         setHasUnsavedChanges(false);
       } catch {
         form.setFieldsValue(DEFAULT_SETTINGS_FORM_VALUES);
         setFormValues(DEFAULT_SETTINGS_FORM_VALUES);
+        setResetValues(DEFAULT_SETTINGS_FORM_VALUES);
       }
 
       try {
@@ -97,6 +86,12 @@ const Settings: React.FC = () => {
 
     void loadData();
   }, [form]);
+
+  const handleReset = () => {
+    form.setFieldsValue(resetValues);
+    setFormValues(resetValues);
+    setHasUnsavedChanges(false);
+  };
 
   const handleSave = async () => {
     try {
@@ -128,6 +123,7 @@ const Settings: React.FC = () => {
       setScale(values.scale);
       setLanguage(values.language);
       setFormValues(values);
+      setResetValues(values);
       setHasUnsavedChanges(false);
       message.success(t('settings.settingsSaved'));
     } catch (error) {
@@ -144,8 +140,8 @@ const Settings: React.FC = () => {
       onOk: async () => {
         try {
           const api = window.electronAPI;
-          if (api?.monitor?.stop) {
-            ensureIpcSuccess(await api.monitor.stop(), '暂停服务失败');
+          if (api) {
+            ensureIpcSuccess(await stopMonitoringService(api), '暂停服务失败');
             message.success('服务已暂停');
             return;
           }
@@ -165,10 +161,10 @@ const Settings: React.FC = () => {
       onOk: async () => {
         try {
           const api = window.electronAPI;
-          if (api?.monitor?.stop && api?.monitor?.start) {
-            ensureIpcSuccess(await api.monitor.stop(), '停止服务失败');
+          if (api) {
+            ensureIpcSuccess(await stopMonitoringService(api), '停止服务失败');
             await new Promise((resolve) => setTimeout(resolve, 1000));
-            ensureIpcSuccess(await api.monitor.start(), '启动服务失败');
+            ensureIpcSuccess(await startMonitoringService(api), '启动服务失败');
             message.success('服务已重启');
             return;
           }
@@ -676,7 +672,7 @@ const Settings: React.FC = () => {
                 />
               )}
               <Space>
-                <Button onClick={() => form.resetFields()} disabled={loading}>
+                <Button onClick={handleReset} disabled={loading}>
                   {t('common.reset')}
                 </Button>
                 <Button type="primary" onClick={() => void handleSave()} loading={loading}>
