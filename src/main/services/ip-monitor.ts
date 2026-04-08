@@ -8,6 +8,7 @@ import { DEFAULT_IP_CHECK_SOURCES, normalizeIPCheckSources } from '../ip-check-s
 import { logger } from './logger';
 import { createIPCheckSources, type IPCheckSource } from './ip-monitor-sources';
 import {
+  getIPSourceDiagnosticLogOptions,
   getSourceFailureLogLevel,
   hasReachedIPConsensus,
   isValidIPv4,
@@ -239,19 +240,22 @@ export class IPMonitor extends EventEmitter {
       } catch (error: unknown) {
         const { code: errorCode, message: errorMsg } = getErrorDetails(error);
         errors.push(`${source.name}: ${errorCode} - ${errorMsg}`);
+
         const sourceFailureLogLevel = getSourceFailureLogLevel(
           results.length === 0 && errors.length === activeSources.length
         );
-        const logSourceFailure = {
-          error:
-            sourceFailureLogLevel === 'ERROR'
-              ? logger.error.bind(logger)
-              : logger.warning.bind(logger),
-        };
 
-        logSourceFailure
-          .error('IP监控', `从 ${source.name} 获取IP失败: ${errorMsg} (错误码: ${errorCode})`)
-          .catch(() => {});
+        const logSourceFailure =
+          sourceFailureLogLevel === 'ERROR'
+            ? logger.error.bind(logger)
+            : logger.warning.bind(logger);
+
+        logSourceFailure(
+          'IP监控',
+          `从 ${source.name} 获取IP失败: ${errorMsg} (错误码: ${errorCode})`,
+          undefined,
+          getIPSourceDiagnosticLogOptions()
+        ).catch(() => {});
       }
     }
 
@@ -288,7 +292,9 @@ export class IPMonitor extends EventEmitter {
               'IP监控',
               `${source.name} 请求失败 (${errorCode}${syscall ? '/' + syscall : ''})，${
                 waitTime / 1000
-              } 秒后重试...`
+              } 秒后重试...`,
+              undefined,
+              getIPSourceDiagnosticLogOptions()
             )
             .catch(() => {});
           await new Promise((resolve) => setTimeout(resolve, waitTime));
@@ -296,7 +302,9 @@ export class IPMonitor extends EventEmitter {
           logger
             .warning(
               'IP监控',
-              `${source.name} 所有重试均失败 - 错误码: ${errorCode}, Syscall: ${syscall}, Errno: ${errnoDescription}`
+              `${source.name} 所有重试均失败 - 错误码: ${errorCode}, Syscall: ${syscall}, Errno: ${errnoDescription}`,
+              undefined,
+              getIPSourceDiagnosticLogOptions()
             )
             .catch(() => {});
         }

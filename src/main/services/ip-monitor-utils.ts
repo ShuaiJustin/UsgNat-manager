@@ -62,5 +62,9 @@ export const hasReachedIPConsensus = (
   return false;
 };
 
+export const getIPSourceDiagnosticLogOptions = (): { persistToDatabase: false } => ({
+  persistToDatabase: false,
+});
+
 export const getSourceFailureLogLevel = (allSourcesFailed: boolean): 'WARNING' | 'ERROR' =>
   allSourcesFailed ? 'ERROR' : 'WARNING';

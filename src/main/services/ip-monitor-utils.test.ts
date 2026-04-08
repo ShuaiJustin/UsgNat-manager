@@ -35,3 +35,10 @@ test('detects when source results have already reached a reliable consensus', ()
   assert.equal(ipMonitorUtils.hasReachedIPConsensus?.(['1.1.1.1', '1.1.1.1']), true);
   assert.equal(ipMonitorUtils.hasReachedIPConsensus?.(['1.1.1.1', '2.2.2.2', '1.1.1.1']), true);
 });
+
+test('keeps source-level retry diagnostics out of the persisted warning list', () => {
+  assert.equal(typeof ipMonitorUtils.getIPSourceDiagnosticLogOptions, 'function');
+  assert.deepEqual(ipMonitorUtils.getIPSourceDiagnosticLogOptions?.(), {
+    persistToDatabase: false,
+  });
+});
