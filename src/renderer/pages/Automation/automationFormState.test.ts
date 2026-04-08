@@ -106,7 +106,7 @@ test('createAutomationFormSnapshot normalizes reset-safe defaults', () => {
     }
   );
 
-  assert.deepEqual(snapshot.formValues.checkSources, ['cip.cc', 'ipip', 'ip.sb', 'icanhazip']);
+  assert.deepEqual(snapshot.formValues.checkSources, ['cip.cc', 'ipip']);
   assert.deepEqual(snapshot.formValues.selectedDevices, []);
   assert.deepEqual(snapshot.formValues.notifyTypes, ['ipChange', 'updateSuccess', 'updateFailed']);
 });

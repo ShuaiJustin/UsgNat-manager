@@ -7,18 +7,26 @@ test('maps legacy source ids to supported ids and removes duplicates', () => {
   assert.deepEqual(normalizeIPCheckSources(['cip', 'ipip', 'ip138', 'ip.sb', 'ipify', 'ip.sb']), [
     'cip.cc',
     'ipip',
-    'ipify',
     'ip.sb',
+    'ipify',
   ]);
 });
 
-test('falls back to the supported defaults when no usable source remains', () => {
-  assert.deepEqual(normalizeIPCheckSources(['unknown-source']), [
-    'cip.cc',
-    'ipip',
-    'ip.sb',
+test('migrates a saved legacy ip138-only configuration to a domestic source', () => {
+  assert.deepEqual(normalizeIPCheckSources(['ip138']), ['cip.cc']);
+});
+
+test('falls back to domestic defaults when no usable source remains', () => {
+  assert.deepEqual(normalizeIPCheckSources(['unknown-source']), ['cip.cc', 'ipip']);
+  assert.deepEqual(normalizeIPCheckSources(undefined), ['cip.cc', 'ipip']);
+  assert.deepEqual([...DEFAULT_IP_CHECK_SOURCES], ['cip.cc', 'ipip']);
+});
+
+test('keeps explicit foreign sources selectable without making them defaults', () => {
+  assert.deepEqual(normalizeIPCheckSources(['ipify', 'icanhazip', 'ifconfig', 'ipinfo']), [
+    'ipify',
     'icanhazip',
+    'ifconfig',
+    'ipinfo',
   ]);
-  assert.deepEqual(normalizeIPCheckSources(undefined), ['cip.cc', 'ipip', 'ip.sb', 'icanhazip']);
-  assert.deepEqual([...DEFAULT_IP_CHECK_SOURCES], ['cip.cc', 'ipip', 'ip.sb', 'icanhazip']);
 });

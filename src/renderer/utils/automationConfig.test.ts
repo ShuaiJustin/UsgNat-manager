@@ -12,20 +12,27 @@ test('normalizes legacy automation source ids into supported values', () => {
   assert.deepEqual(normalizeAutomationCheckSources(['cip', 'ipip', 'ip138', 'ip.sb', 'ipify']), [
     'cip.cc',
     'ipip',
-    'ipify',
     'ip.sb',
+    'ipify',
   ]);
 });
 
-test('falls back to supported defaults when the saved source list is empty or invalid', () => {
-  assert.deepEqual(normalizeAutomationCheckSources([]), ['cip.cc', 'ipip', 'ip.sb', 'icanhazip']);
-  assert.deepEqual(normalizeAutomationCheckSources(['not-supported']), [
-    'cip.cc',
-    'ipip',
+test('migrates a saved legacy ip138-only automation configuration to a domestic source', () => {
+  assert.deepEqual(normalizeAutomationCheckSources(['ip138']), ['cip.cc']);
+});
+
+test('falls back to domestic defaults when the saved source list is empty or invalid', () => {
+  assert.deepEqual(normalizeAutomationCheckSources([]), ['cip.cc', 'ipip']);
+  assert.deepEqual(normalizeAutomationCheckSources(['not-supported']), ['cip.cc', 'ipip']);
+  assert.deepEqual([...DEFAULT_AUTOMATION_CHECK_SOURCES], ['cip.cc', 'ipip']);
+});
+
+test('still accepts explicit foreign automation sources when the user selects them', () => {
+  assert.deepEqual(normalizeAutomationCheckSources(['ipify', 'ip.sb', 'icanhazip']), [
+    'ipify',
     'ip.sb',
     'icanhazip',
   ]);
-  assert.deepEqual([...DEFAULT_AUTOMATION_CHECK_SOURCES], ['cip.cc', 'ipip', 'ip.sb', 'icanhazip']);
 });
 
 test('requires a selected device only when auto-update is enabled', () => {

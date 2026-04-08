@@ -41,5 +41,26 @@ export const selectMostCommonIP = (ips: readonly string[]): string => {
   return mostCommonIP;
 };
 
+export const hasReachedIPConsensus = (
+  ips: readonly string[],
+  minimumMatches: number = 2
+): boolean => {
+  if (minimumMatches <= 1) {
+    return ips.length > 0;
+  }
+
+  const ipCounts = new Map<string, number>();
+
+  for (const ip of ips) {
+    const nextCount = (ipCounts.get(ip) || 0) + 1;
+    if (nextCount >= minimumMatches) {
+      return true;
+    }
+    ipCounts.set(ip, nextCount);
+  }
+
+  return false;
+};
+
 export const getSourceFailureLogLevel = (allSourcesFailed: boolean): 'WARNING' | 'ERROR' =>
   allSourcesFailed ? 'ERROR' : 'WARNING';

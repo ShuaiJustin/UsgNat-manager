@@ -7,7 +7,12 @@ import https from 'node:https';
 import { DEFAULT_IP_CHECK_SOURCES, normalizeIPCheckSources } from '../ip-check-sources';
 import { logger } from './logger';
 import { createIPCheckSources, type IPCheckSource } from './ip-monitor-sources';
-import { getSourceFailureLogLevel, isValidIPv4, selectMostCommonIP } from './ip-monitor-utils';
+import {
+  getSourceFailureLogLevel,
+  hasReachedIPConsensus,
+  isValidIPv4,
+  selectMostCommonIP,
+} from './ip-monitor-utils';
 
 export interface IPChangeEvent {
   oldIP: string;
@@ -226,6 +231,9 @@ export class IPMonitor extends EventEmitter {
         const ip = await this.fetchIPFromSource(source);
         if (ip && isValidIPv4(ip)) {
           results.push(ip);
+          if (hasReachedIPConsensus(results)) {
+            return selectMostCommonIP(results);
+          }
           await new Promise((resolve) => setTimeout(resolve, 500));
         }
       } catch (error: unknown) {

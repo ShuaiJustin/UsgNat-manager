@@ -245,5 +245,6 @@ test('buildAutomationMonitorStartConfig falls back to default sources when saved
     checkSources: ['not-supported'],
   });
 
-  assert.deepEqual(config.checkSources, [...DEFAULT_AUTOMATION_CHECK_SOURCES]);
+  assert.deepEqual(config.checkSources, ['cip.cc', 'ipip']);
+  assert.deepEqual([...DEFAULT_AUTOMATION_CHECK_SOURCES], ['cip.cc', 'ipip']);
 });

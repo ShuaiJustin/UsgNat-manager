@@ -26,3 +26,12 @@ test('classifies single-source failures as warnings and only treats full exhaust
   assert.equal(ipMonitorUtils.getSourceFailureLogLevel?.(false), 'WARNING');
   assert.equal(ipMonitorUtils.getSourceFailureLogLevel?.(true), 'ERROR');
 });
+
+test('detects when source results have already reached a reliable consensus', () => {
+  assert.equal(typeof ipMonitorUtils.hasReachedIPConsensus, 'function');
+  assert.equal(ipMonitorUtils.hasReachedIPConsensus?.([]), false);
+  assert.equal(ipMonitorUtils.hasReachedIPConsensus?.(['1.1.1.1']), false);
+  assert.equal(ipMonitorUtils.hasReachedIPConsensus?.(['1.1.1.1', '2.2.2.2']), false);
+  assert.equal(ipMonitorUtils.hasReachedIPConsensus?.(['1.1.1.1', '1.1.1.1']), true);
+  assert.equal(ipMonitorUtils.hasReachedIPConsensus?.(['1.1.1.1', '2.2.2.2', '1.1.1.1']), true);
+});

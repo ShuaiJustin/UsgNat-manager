@@ -1,12 +1,13 @@
 const SOURCE_ALIASES: Record<string, string> = {
   cip: 'cip.cc',
-  ip138: 'ipify',
+  ip138: 'cip.cc',
 };
 
-export const DEFAULT_IP_CHECK_SOURCES = ['cip.cc', 'ipip', 'ip.sb', 'icanhazip'] as const;
+export const DEFAULT_IP_CHECK_SOURCES = ['cip.cc', 'ipip'] as const;
 
 const SUPPORTED_IP_CHECK_SOURCES = new Set<string>([
   ...DEFAULT_IP_CHECK_SOURCES,
+  'ip.sb',
   'ipify',
   'icanhazip',
   'ipinfo',
