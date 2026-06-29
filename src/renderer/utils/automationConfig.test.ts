@@ -18,13 +18,25 @@ test('normalizes legacy automation source ids into supported values', () => {
 });
 
 test('migrates a saved legacy ip138-only automation configuration to a domestic source', () => {
-  assert.deepEqual(normalizeAutomationCheckSources(['ip138']), ['cip.cc']);
+  assert.deepEqual(normalizeAutomationCheckSources(['ip138']), ['ipip', 'ddnspod', 'pconline']);
 });
 
 test('falls back to domestic defaults when the saved source list is empty or invalid', () => {
-  assert.deepEqual(normalizeAutomationCheckSources([]), ['cip.cc', 'ipip']);
-  assert.deepEqual(normalizeAutomationCheckSources(['not-supported']), ['cip.cc', 'ipip']);
-  assert.deepEqual([...DEFAULT_AUTOMATION_CHECK_SOURCES], ['cip.cc', 'ipip']);
+  assert.deepEqual(normalizeAutomationCheckSources([]), ['ipip', 'ddnspod', 'pconline']);
+  assert.deepEqual(normalizeAutomationCheckSources(['not-supported']), [
+    'ipip',
+    'ddnspod',
+    'pconline',
+  ]);
+  assert.deepEqual([...DEFAULT_AUTOMATION_CHECK_SOURCES], ['ipip', 'ddnspod', 'pconline']);
+});
+
+test('migrates the old cip.cc automation default pair to stable domestic defaults', () => {
+  assert.deepEqual(normalizeAutomationCheckSources(['cip.cc', 'ipip']), [
+    'ipip',
+    'ddnspod',
+    'pconline',
+  ]);
 });
 
 test('still accepts explicit foreign automation sources when the user selects them', () => {

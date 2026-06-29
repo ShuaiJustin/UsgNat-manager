@@ -3,7 +3,14 @@ import test from 'node:test';
 
 import * as ipMonitorUtils from './ip-monitor-utils.ts';
 
-const { extractIPv4, isValidIPv4, selectMostCommonIP } = ipMonitorUtils;
+const {
+  extractIPv4,
+  isValidIPv4,
+  recordIPChangeCandidate,
+  redactURLCredentials,
+  selectConsensusIP,
+  selectMostCommonIP,
+} = ipMonitorUtils;
 
 test('extracts IPv4 addresses from verbose provider responses', () => {
   assert.equal(extractIPv4('当前 IP：123.45.67.89 来自上海'), '123.45.67.89');
@@ -34,6 +41,46 @@ test('detects when source results have already reached a reliable consensus', ()
   assert.equal(ipMonitorUtils.hasReachedIPConsensus?.(['1.1.1.1', '2.2.2.2']), false);
   assert.equal(ipMonitorUtils.hasReachedIPConsensus?.(['1.1.1.1', '1.1.1.1']), true);
   assert.equal(ipMonitorUtils.hasReachedIPConsensus?.(['1.1.1.1', '2.2.2.2', '1.1.1.1']), true);
+});
+
+test('selects an IP only when the configured consensus threshold is met', () => {
+  assert.equal(selectConsensusIP(['1.1.1.1'], 1), '1.1.1.1');
+  assert.equal(selectConsensusIP(['1.1.1.1', '1.1.1.1'], 2), '1.1.1.1');
+  assert.equal(selectConsensusIP(['1.1.1.1', '2.2.2.2'], 2), '');
+});
+
+test('requires IP change confirmations to be consecutive for the same candidate', () => {
+  const confirmations = new Map<string, number>();
+
+  assert.deepEqual(recordIPChangeCandidate(confirmations, '1.1.1.1', '2.2.2.2', 2), {
+    confirmCount: 1,
+    confirmed: false,
+  });
+  assert.deepEqual(recordIPChangeCandidate(confirmations, '1.1.1.1', '1.1.1.1', 2), {
+    confirmCount: 0,
+    confirmed: false,
+  });
+  assert.deepEqual(recordIPChangeCandidate(confirmations, '1.1.1.1', '2.2.2.2', 2), {
+    confirmCount: 1,
+    confirmed: false,
+  });
+  assert.deepEqual(recordIPChangeCandidate(confirmations, '1.1.1.1', '3.3.3.3', 2), {
+    confirmCount: 1,
+    confirmed: false,
+  });
+  assert.deepEqual(recordIPChangeCandidate(confirmations, '1.1.1.1', '3.3.3.3', 2), {
+    confirmCount: 2,
+    confirmed: true,
+  });
+});
+
+test('redacts credentials from proxy URLs before logging', () => {
+  assert.equal(
+    redactURLCredentials('http://user:secret@proxy.example.com:8080'),
+    'http://***:***@proxy.example.com:8080'
+  );
+  assert.equal(redactURLCredentials('https://proxy.example.com'), 'https://proxy.example.com');
+  assert.equal(redactURLCredentials('not a url'), 'not a url');
 });
 
 test('keeps source-level retry diagnostics out of the persisted warning list', () => {

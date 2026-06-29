@@ -2,7 +2,11 @@ import { Client, ConnectConfig } from 'ssh2';
 import { EventEmitter } from 'events';
 import { Buffer } from 'buffer';
 import { logger } from './logger';
-import { getDeviceCommandError } from './ssh-manager-helpers';
+import {
+  getDeviceCommandError,
+  isBenignSshDisconnectError,
+  isCliPromptReady,
+} from './ssh-manager-helpers';
 
 /**
  * SSH连接配置
@@ -44,6 +48,7 @@ export interface SSHCommandResult {
 export class SSHManager extends EventEmitter {
   private connections: Map<string, Client> = new Map();
   private connectionStatus: Map<string, boolean> = new Map();
+  private disconnectingDevices: Set<string> = new Set();
 
   constructor() {
     super();
@@ -156,12 +161,22 @@ export class SSHManager extends EventEmitter {
             });
           }
           // 无论如何都发出error事件，用于日志记录
-          this.emit('error', deviceId, err);
+          if (!this.shouldSuppressSshError(deviceId, err)) {
+            this.emit('error', deviceId, err);
+          }
         })
         .on('close', () => {
-          this.connections.delete(deviceId);
-          this.connectionStatus.set(deviceId, false);
-          this.emit('disconnected', deviceId);
+          const isCurrentConnection = this.connections.get(deviceId) === client;
+          if (isCurrentConnection) {
+            this.connections.delete(deviceId);
+            this.connectionStatus.set(deviceId, false);
+          } else if (!this.connections.has(deviceId)) {
+            this.connectionStatus.set(deviceId, false);
+          }
+          this.disconnectingDevices.delete(deviceId);
+          if (isCurrentConnection || !this.connections.has(deviceId)) {
+            this.emit('disconnected', deviceId);
+          }
         })
         .connect(this.buildConnectConfig(config));
     });
@@ -173,10 +188,15 @@ export class SSHManager extends EventEmitter {
   async disconnect(deviceId: string): Promise<void> {
     const client = this.connections.get(deviceId);
     if (client) {
+      this.disconnectingDevices.add(deviceId);
       client.end();
       this.connections.delete(deviceId);
       this.connectionStatus.set(deviceId, false);
     }
+  }
+
+  private shouldSuppressSshError(deviceId: string, err: Error): boolean {
+    return this.disconnectingDevices.has(deviceId) && isBenignSshDisconnectError(err);
   }
 
   /**
@@ -200,24 +220,33 @@ export class SSHManager extends EventEmitter {
     return new Promise((resolve) => {
       let output = '';
       let commandExecuted = false;
+      let activeStream: { end: () => void } | null = null;
+
+      const finish = (result: SSHCommandResult) => {
+        if (commandExecuted) {
+          return;
+        }
+
+        clearTimeout(timer);
+        commandExecuted = true;
+        const streamToClose = activeStream;
+        activeStream = null;
+        streamToClose?.end();
+        resolve(result);
+      };
 
       const timer = setTimeout(() => {
-        if (!commandExecuted) {
-          commandExecuted = true;
-          resolve({
-            success: false,
-            output,
-            error: '命令执行超时',
-          });
-        }
+        finish({
+          success: false,
+          output,
+          error: '命令执行超时',
+        });
       }, timeout);
 
       // 使用shell模式而不是exec模式，适用于需要交互式登录的设备
       client.shell((err, stream) => {
         if (err) {
-          clearTimeout(timer);
-          commandExecuted = true;
-          resolve({
+          finish({
             success: false,
             output: '',
             error: err.message,
@@ -225,15 +254,15 @@ export class SSHManager extends EventEmitter {
           return;
         }
 
+        activeStream = stream;
         let waitForPrompt = true;
+        let commandSent = false;
 
         stream
           .on('close', () => {
             if (!commandExecuted) {
-              clearTimeout(timer);
-              commandExecuted = true;
               const commandError = getDeviceCommandError(output);
-              resolve({
+              finish({
                 success: commandError === null,
                 output: this.cleanOutput(output),
                 error: commandError || undefined,
@@ -243,9 +272,7 @@ export class SSHManager extends EventEmitter {
           })
           .on('error', (err: Error) => {
             if (!commandExecuted) {
-              clearTimeout(timer);
-              commandExecuted = true;
-              resolve({
+              finish({
                 success: false,
                 output: output,
                 error: `Stream错误: ${err.message}`,
@@ -261,28 +288,18 @@ export class SSHManager extends EventEmitter {
               waitForPrompt = false;
               output = ''; // 清空之前的欢迎信息
               stream.write(command + '\n');
+              commandSent = true;
+              return;
+            }
 
-              // 设置一个延迟，等待命令执行完成
-              setTimeout(() => {
-                // 发送quit命令退出
-                stream.write('quit\n');
-
-                // 再等待一小段时间让输出完成
-                setTimeout(() => {
-                  if (!commandExecuted) {
-                    clearTimeout(timer);
-                    commandExecuted = true;
-                    stream.end();
-                    const commandError = getDeviceCommandError(output);
-                    resolve({
-                      success: commandError === null,
-                      output: this.cleanOutput(output),
-                      error: commandError || undefined,
-                      exitCode: commandError === null ? 0 : 1,
-                    });
-                  }
-                }, 1000);
-              }, 2000);
+            if (commandSent && this.isPromptReady(output)) {
+              const commandError = getDeviceCommandError(output);
+              finish({
+                success: commandError === null,
+                output: this.cleanOutput(output),
+                error: commandError || undefined,
+                exitCode: commandError === null ? 0 : 1,
+              });
             }
           })
           .stderr.on('data', (data: Buffer) => {
@@ -296,19 +313,7 @@ export class SSHManager extends EventEmitter {
    * 检测是否已经显示命令提示符
    */
   private isPromptReady(text: string): boolean {
-    // 检测华为USG设备的提示符模式
-    // <USG6000> 用户模式
-    // [USG6000] 系统视图
-    // [USG6000-zone] 等其他视图
-    const patterns = [
-      /<[^>]+>\s*$/, // <hostname>
-      /\[[^\]]+\]\s*$/, // [hostname] or [hostname-xxx]
-      /[>#$]\s*$/, // 通用提示符
-    ];
-
-    return (
-      patterns.some((pattern) => pattern.test(text)) || text.includes('User Access Verification')
-    );
+    return isCliPromptReady(text);
   }
 
   /**

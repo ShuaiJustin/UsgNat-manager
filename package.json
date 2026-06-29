@@ -112,6 +112,7 @@
     "files": [
       "dist/**/*",
       "resources/**/*",
+      "!**/Thumbs.db",
       "package.json",
       "prisma/schema.prisma",
       "!prisma/*.db",

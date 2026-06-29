@@ -11,6 +11,12 @@ const COMMAND_ERROR_PATTERNS = [
   /^permission denied/i,
 ];
 
+const BENIGN_DISCONNECT_PATTERNS = [
+  /connection is closed by ssh server/i,
+  /read econnreset/i,
+  /econnreset/i,
+];
+
 export const getDeviceCommandError = (output: string): string | null => {
   const lines = output
     .split(/\r?\n/)
@@ -24,4 +30,22 @@ export const getDeviceCommandError = (output: string): string | null => {
   }
 
   return null;
+};
+
+export const isCliPromptReady = (text: string): boolean => {
+  const trimmed = text.trimEnd();
+  const patterns = [/<[^>]+>\s*$/, /\[[^\]]+\]\s*$/, /[>#$]\s*$/];
+
+  return (
+    patterns.some((pattern) => pattern.test(trimmed)) || text.includes('User Access Verification')
+  );
+};
+
+export const isBenignSshDisconnectError = (error: Error): boolean => {
+  const code = (error as Error & { code?: string }).code;
+  const message = error.message || String(error);
+
+  return (
+    code === 'ECONNRESET' || BENIGN_DISCONNECT_PATTERNS.some((pattern) => pattern.test(message))
+  );
 };

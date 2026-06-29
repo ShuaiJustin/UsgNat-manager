@@ -12,7 +12,9 @@ import {
   getSourceFailureLogLevel,
   hasReachedIPConsensus,
   isValidIPv4,
-  selectMostCommonIP,
+  recordIPChangeCandidate,
+  redactURLCredentials,
+  selectConsensusIP,
 } from './ip-monitor-utils';
 
 export interface IPChangeEvent {
@@ -115,11 +117,14 @@ export class IPMonitor extends EventEmitter {
 
     const proxy = process.env.HTTPS_PROXY || process.env.HTTP_PROXY;
     if (proxy) {
+      const redactedProxy = redactURLCredentials(proxy);
       try {
         axiosConfig.httpsAgent = new HttpsProxyAgent(proxy);
-        logger.info('IP监控', `检测到代理配置，使用代理: ${proxy}`).catch(() => {});
+        logger.info('IP监控', `检测到代理配置，使用代理: ${redactedProxy}`).catch(() => {});
       } catch {
-        logger.warning('IP监控', `代理配置解析失败 (${proxy})，继续使用直连`).catch(() => {});
+        logger
+          .warning('IP监控', `代理配置解析失败 (${redactedProxy})，继续使用直连`)
+          .catch(() => {});
       }
     }
 
@@ -177,7 +182,7 @@ export class IPMonitor extends EventEmitter {
       if (ip !== this.currentIP) {
         await this.handleIPChange(ip);
       } else {
-        this.changeConfirmations.delete(ip);
+        this.changeConfirmations.clear();
         this.emit('checked', { ip, changed: false });
       }
 
@@ -189,8 +194,12 @@ export class IPMonitor extends EventEmitter {
   }
 
   private async handleIPChange(newIP: string): Promise<void> {
-    const confirmCount = (this.changeConfirmations.get(newIP) || 0) + 1;
-    this.changeConfirmations.set(newIP, confirmCount);
+    const { confirmCount, confirmed } = recordIPChangeCandidate(
+      this.changeConfirmations,
+      this.currentIP,
+      newIP,
+      this.config.confirmCount
+    );
 
     this.emit('checking', {
       oldIP: this.currentIP,
@@ -199,7 +208,7 @@ export class IPMonitor extends EventEmitter {
       required: this.config.confirmCount,
     });
 
-    if (confirmCount >= this.config.confirmCount) {
+    if (confirmed) {
       this.previousIP = this.currentIP;
       this.currentIP = newIP;
       this.changeConfirmations.clear();
@@ -226,14 +235,15 @@ export class IPMonitor extends EventEmitter {
 
     const results: string[] = [];
     const errors: string[] = [];
+    const requiredConsensus = activeSources.length === 1 ? 1 : 2;
 
     for (const source of activeSources) {
       try {
         const ip = await this.fetchIPFromSource(source);
         if (ip && isValidIPv4(ip)) {
           results.push(ip);
-          if (hasReachedIPConsensus(results)) {
-            return selectMostCommonIP(results);
+          if (hasReachedIPConsensus(results, requiredConsensus)) {
+            return selectConsensusIP(results, requiredConsensus);
           }
           await new Promise((resolve) => setTimeout(resolve, 500));
         }
@@ -263,7 +273,12 @@ export class IPMonitor extends EventEmitter {
       throw new Error(`所有IP检测源都失败: ${errors.join('; ')}`);
     }
 
-    return selectMostCommonIP(results);
+    const consensusIP = selectConsensusIP(results, requiredConsensus);
+    if (!consensusIP) {
+      throw new Error(`IP检测源结果未达成共识: ${results.join(', ')}`);
+    }
+
+    return consensusIP;
   }
 
   private async fetchIPFromSource(source: IPCheckSource, retries = 2): Promise<string> {

@@ -13,13 +13,17 @@ test('maps legacy source ids to supported ids and removes duplicates', () => {
 });
 
 test('migrates a saved legacy ip138-only configuration to a domestic source', () => {
-  assert.deepEqual(normalizeIPCheckSources(['ip138']), ['cip.cc']);
+  assert.deepEqual(normalizeIPCheckSources(['ip138']), ['ipip', 'ddnspod', 'pconline']);
 });
 
 test('falls back to domestic defaults when no usable source remains', () => {
-  assert.deepEqual(normalizeIPCheckSources(['unknown-source']), ['cip.cc', 'ipip']);
-  assert.deepEqual(normalizeIPCheckSources(undefined), ['cip.cc', 'ipip']);
-  assert.deepEqual([...DEFAULT_IP_CHECK_SOURCES], ['cip.cc', 'ipip']);
+  assert.deepEqual(normalizeIPCheckSources(['unknown-source']), ['ipip', 'ddnspod', 'pconline']);
+  assert.deepEqual(normalizeIPCheckSources(undefined), ['ipip', 'ddnspod', 'pconline']);
+  assert.deepEqual([...DEFAULT_IP_CHECK_SOURCES], ['ipip', 'ddnspod', 'pconline']);
+});
+
+test('migrates the old cip.cc default pair to stable domestic defaults', () => {
+  assert.deepEqual(normalizeIPCheckSources(['cip.cc', 'ipip']), ['ipip', 'ddnspod', 'pconline']);
 });
 
 test('keeps explicit foreign sources selectable without making them defaults', () => {

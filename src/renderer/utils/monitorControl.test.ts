@@ -83,7 +83,7 @@ test('startMonitoringService prefers automation start when saved automation moni
       get: createConfigGetter({
         ipMonitorEnabled: true,
         autoUpdateEnabled: true,
-        checkSources: ['cip'],
+        checkSources: ['cip.cc'],
         selectedDevices: ['device-1'],
       }),
     },
@@ -245,6 +245,6 @@ test('buildAutomationMonitorStartConfig falls back to default sources when saved
     checkSources: ['not-supported'],
   });
 
-  assert.deepEqual(config.checkSources, ['cip.cc', 'ipip']);
-  assert.deepEqual([...DEFAULT_AUTOMATION_CHECK_SOURCES], ['cip.cc', 'ipip']);
+  assert.deepEqual(config.checkSources, ['ipip', 'ddnspod', 'pconline']);
+  assert.deepEqual([...DEFAULT_AUTOMATION_CHECK_SOURCES], ['ipip', 'ddnspod', 'pconline']);
 });

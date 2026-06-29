@@ -22,6 +22,25 @@ export interface ParsedSystemInfo {
   serialNumber?: string;
 }
 
+const NAT_SERVICE_PORTS: Record<string, string> = {
+  ftp: '21',
+  ssh: '22',
+  telnet: '23',
+  smtp: '25',
+  domain: '53',
+  dns: '53',
+  www: '80',
+  http: '80',
+  pop3: '110',
+  imap: '143',
+  https: '443',
+  ldap: '389',
+  ldaps: '636',
+  rdp: '3389',
+};
+
+const normalizeNatPort = (value: string): string => NAT_SERVICE_PORTS[value.toLowerCase()] ?? value;
+
 /**
  * 华为USG命令解析器
  */
@@ -61,7 +80,7 @@ export class USGParser {
   private parseNatServerLine(line: string): ParsedNatRule | null {
     // 匹配带名称的规则（支持no-reverse参数）
     const namedPattern =
-      /nat\s+server\s+(?:name\s+)?(\S+)\s+protocol\s+(tcp|udp|all)\s+global\s+(\S+)\s+(\d+)\s+inside\s+(\S+)\s+(\d+)(.*)$/i;
+      /nat\s+server\s+(?:name\s+)?(\S+)\s+protocol\s+(tcp|udp|all)\s+global\s+(\S+)\s+(\S+)\s+inside\s+(\S+)\s+(\S+)(.*)$/i;
     const namedMatch = line.match(namedPattern);
 
     if (namedMatch) {
@@ -70,9 +89,9 @@ export class USGParser {
         ruleName: namedMatch[1],
         protocol: namedMatch[2].toUpperCase() as 'TCP' | 'UDP' | 'ALL',
         globalIp: namedMatch[3],
-        globalPort: namedMatch[4],
+        globalPort: normalizeNatPort(namedMatch[4]),
         insideIp: namedMatch[5],
-        insidePort: namedMatch[6],
+        insidePort: normalizeNatPort(namedMatch[6]),
         enabled: !line.includes('undo'),
         noReverse: /no-reverse/i.test(additionalParams),
       };
@@ -80,7 +99,7 @@ export class USGParser {
 
     // 匹配不带名称的规则
     const pattern =
-      /nat\s+server\s+protocol\s+(tcp|udp|all)\s+global\s+(\S+)\s+(\d+)\s+inside\s+(\S+)\s+(\d+)(.*)$/i;
+      /nat\s+server\s+protocol\s+(tcp|udp|all)\s+global\s+(\S+)\s+(\S+)\s+inside\s+(\S+)\s+(\S+)(.*)$/i;
     const match = line.match(pattern);
 
     if (match) {
@@ -89,9 +108,9 @@ export class USGParser {
         ruleName: `NAT_${match[2]}_${match[3]}`,
         protocol: match[1].toUpperCase() as 'TCP' | 'UDP' | 'ALL',
         globalIp: match[2],
-        globalPort: match[3],
+        globalPort: normalizeNatPort(match[3]),
         insideIp: match[4],
-        insidePort: match[5],
+        insidePort: normalizeNatPort(match[5]),
         enabled: !line.includes('undo'),
         noReverse: /no-reverse/i.test(additionalParams),
       };
@@ -156,23 +175,16 @@ export class USGParser {
 
   /**
    * 生成删除NAT Server命令
-   * 华为USG官方删除格式：
-   * - 按名称删除：undo nat server name <规则名>
-   * - 按ID删除：undo nat server ID <数字>
+   * 使用完整端点参数删除，避免本地规则名和设备显示名不一致时失败。
    */
   generateDeleteNatServerCommand(rule: ParsedNatRule): string {
-    // 华为USG官方删除命令格式
-    let cmd: string;
-    if (rule.ruleName && !rule.ruleName.startsWith('NAT_')) {
-      // 带名称的规则：使用官方格式 "undo nat server name <规则名>"
-      cmd = `undo nat server name ${rule.ruleName}`;
-    } else {
-      // 不带名称的规则：使用完整参数格式（兼容旧版本）
-      const protocol = rule.protocol.toLowerCase();
-      cmd = `undo nat server protocol ${protocol} global ${rule.globalIp} ${rule.globalPort} inside ${rule.insideIp} ${rule.insidePort}`;
-    }
+    // Endpoint deletion avoids stale or display-only rule names on USG devices.
+    return this.generateDeleteNatServerByEndpointCommand(rule);
+  }
 
-    return cmd;
+  private generateDeleteNatServerByEndpointCommand(rule: ParsedNatRule): string {
+    const protocol = rule.protocol.toLowerCase();
+    return `undo nat server protocol ${protocol} global ${rule.globalIp} ${rule.globalPort} inside ${rule.insideIp} ${rule.insidePort}`;
   }
 
   /**
@@ -186,7 +198,7 @@ export class USGParser {
 
     for (const rule of rules) {
       // 删除旧规则
-      commands.push(this.generateDeleteNatServerCommand(rule));
+      commands.push(this.generateDeleteNatServerByEndpointCommand(rule));
 
       // 添加新规则（使用新IP）
       const updatedRule = { ...rule, globalIp: newGlobalIp };

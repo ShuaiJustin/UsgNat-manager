@@ -243,28 +243,6 @@ export function registerRuleHandlers() {
         });
       }
 
-      // executeCommand 会自动断开连接，等待完全关闭
-      await logger.info('同步规则', '等待连接完全关闭', { deviceName: device.name });
-      await new Promise((resolve) => setTimeout(resolve, 3000));
-
-      // 重新连接执行同步
-      await logger.info('同步规则', '重新连接设备', { deviceName: device.name });
-      const reconnectResult = await sshManager.connect(deviceId, {
-        host: device.host,
-        port: device.port,
-        username: credential.username || 'admin',
-        password: credential.password,
-        privateKey: credential.privateKey,
-      });
-
-      if (!reconnectResult.success) {
-        await logger.error('同步规则', '重新连接失败', {
-          deviceName: device.name,
-          error: reconnectResult.message,
-        });
-        throw new Error(`重新连接失败: ${reconnectResult.message}`);
-      }
-
       // 生成同步命令
       const parsedLocalRules = localRules.map((r) => ({
         ruleName: r.ruleName,

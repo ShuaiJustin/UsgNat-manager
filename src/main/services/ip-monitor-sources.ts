@@ -60,6 +60,22 @@ export const createIPCheckSources = (): Map<string, IPCheckSource> =>
       },
     ],
     [
+      'ddnspod',
+      {
+        name: 'DNSPod',
+        url: 'https://ip.ddnspod.com',
+        parser: extractIPv4,
+      },
+    ],
+    [
+      'pconline',
+      {
+        name: '太平洋网络',
+        url: 'https://whois.pconline.com.cn/ipJson.jsp?json=true',
+        parser: extractIPv4,
+      },
+    ],
+    [
       'cip.cc',
       {
         name: 'cip.cc',

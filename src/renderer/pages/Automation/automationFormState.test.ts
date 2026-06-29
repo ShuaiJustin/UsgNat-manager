@@ -12,7 +12,7 @@ test('buildAutomationFormSnapshot keeps stored automation values for later reset
       ipMonitorEnabled: false,
       checkInterval: 12,
       confirmCount: 4,
-      checkSources: ['cip'],
+      checkSources: ['cip.cc'],
       autoUpdateEnabled: true,
       selectedDevices: ['device-1'],
       emailNotifyEnabled: true,
@@ -106,7 +106,7 @@ test('createAutomationFormSnapshot normalizes reset-safe defaults', () => {
     }
   );
 
-  assert.deepEqual(snapshot.formValues.checkSources, ['cip.cc', 'ipip']);
+  assert.deepEqual(snapshot.formValues.checkSources, ['ipip', 'ddnspod', 'pconline']);
   assert.deepEqual(snapshot.formValues.selectedDevices, []);
   assert.deepEqual(snapshot.formValues.notifyTypes, ['ipChange', 'updateSuccess', 'updateFailed']);
 });
