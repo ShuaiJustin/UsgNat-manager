@@ -54,3 +54,6 @@ resources/*
 resources/build/*
 !resources/build/entitlements.mac.plist
 .claude/
+.agents/
+.codex/
+AGENTS.md
