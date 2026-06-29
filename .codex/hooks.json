@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "notes": "钩子绑定模板。若你的 Codex 运行时使用不同的钩子结构，请调整事件名。",
+  "hooks": {
+    "pre_tool_shell": ".codex/hooks/pre-tool-shell.sh",
+    "post_commit": ".codex/hooks/auto-push.sh",
+    "stop": ".codex/hooks/stop-gate.sh",
+    "post_file_change": ".codex/hooks/mark-review-needed.sh",
+    "user_message": ".codex/hooks/detect-feedback-signal.sh",
+    "session_start": ".codex/hooks/check-evolution.sh"
+  }
+}

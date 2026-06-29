@@ -159,3 +159,9 @@ export const createNatRulePayloads = (
     enabled: rule.enabled,
     noReverse: rule.noReverse || false,
   }));
+
+export const assertRuleVerificationSucceeded = (verified: boolean): void => {
+  if (!verified) {
+    throw new Error('Rule verification failed after device update');
+  }
+};

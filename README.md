@@ -345,11 +345,11 @@ USG1.0.7/
 │   └── settings.json           # 工作区视图收口
 ├── package.json                # 工程入口与构建脚本
 ├── tsconfig*.json              # TypeScript 配置组
-├── vite.config.ts              # Vite 配置
+├── vite.config.mts             # Vite 配置
 └── README.md
 ```
 
-根目录保留 `package.json`、`vite.config.ts`、`tsconfig*.json`、`index.html` 这类工具入口是有意的；工作区已通过 `.vscode/settings.json` 把关联配置折叠显示，避免 Explorer 继续散成一片。
+根目录保留 `package.json`、`vite.config.mts`、`tsconfig*.json`、`index.html` 这类工具入口是有意的；工作区已通过 `.vscode/settings.json` 把关联配置折叠显示，避免 Explorer 继续散成一片。
 
 ### 核心模块说明
 

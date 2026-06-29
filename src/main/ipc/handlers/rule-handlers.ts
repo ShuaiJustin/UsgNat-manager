@@ -6,6 +6,7 @@ import { notifier } from '../../services/notifier';
 import { prisma } from '../../services/prisma-client';
 import { sshManager } from '../../services/ssh-manager';
 import { usgParser, type ParsedNatRule } from '../../services/usg-parser';
+import { assertBatchUpdateIPInput, getRuleIdsOutsideDevice } from './rule-handler-helpers';
 import { assertSupportedDeviceAccess } from './shared';
 
 type RuleWritePayload = {
@@ -346,6 +347,8 @@ export function registerRuleHandlers() {
     async (event, deviceId: string, ruleIds: string[], newIP: string) => {
       let device: Device | null = null;
       try {
+        assertBatchUpdateIPInput({ deviceId, ruleIds, newIP });
+
         device = await prisma.device.findUnique({ where: { id: deviceId } });
         if (!device) {
           throw new Error('设备不存在');
@@ -357,6 +360,17 @@ export function registerRuleHandlers() {
 
         if (rules.length === 0) {
           throw new Error('没有找到要更新的规则');
+        }
+
+        if (rules.length !== new Set(ruleIds).size) {
+          throw new Error('Some selected rules do not exist');
+        }
+
+        const outsideDeviceRuleIds = getRuleIdsOutsideDevice(rules, deviceId);
+        if (outsideDeviceRuleIds.length > 0) {
+          throw new Error(
+            `Selected rules do not belong to device ${deviceId}: ${outsideDeviceRuleIds.join(', ')}`
+          );
         }
 
         const credential = await credentialManager.getCredential(deviceId);
@@ -406,7 +420,7 @@ export function registerRuleHandlers() {
 
         // 更新数据库
         await prisma.natRule.updateMany({
-          where: { id: { in: ruleIds } },
+          where: { id: { in: ruleIds }, deviceId },
           data: { globalIp: newIP },
         });
 

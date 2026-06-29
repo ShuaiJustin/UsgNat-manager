@@ -2,6 +2,7 @@ import { Client, ConnectConfig } from 'ssh2';
 import { EventEmitter } from 'events';
 import { Buffer } from 'buffer';
 import { logger } from './logger';
+import { getDeviceCommandError } from './ssh-manager-helpers';
 
 /**
  * SSH连接配置
@@ -231,10 +232,12 @@ export class SSHManager extends EventEmitter {
             if (!commandExecuted) {
               clearTimeout(timer);
               commandExecuted = true;
+              const commandError = getDeviceCommandError(output);
               resolve({
-                success: true,
+                success: commandError === null,
                 output: this.cleanOutput(output),
-                exitCode: 0,
+                error: commandError || undefined,
+                exitCode: commandError === null ? 0 : 1,
               });
             }
           })
@@ -270,10 +273,12 @@ export class SSHManager extends EventEmitter {
                     clearTimeout(timer);
                     commandExecuted = true;
                     stream.end();
+                    const commandError = getDeviceCommandError(output);
                     resolve({
-                      success: true,
+                      success: commandError === null,
                       output: this.cleanOutput(output),
-                      exitCode: 0,
+                      error: commandError || undefined,
+                      exitCode: commandError === null ? 0 : 1,
                     });
                   }
                 }, 1000);
@@ -438,10 +443,12 @@ export class SSHManager extends EventEmitter {
               clearTimeout(timer);
               clearInterval(dataCheckInterval);
               commandExecuted = true;
+              const commandError = getDeviceCommandError(output);
               resolve({
-                success: currentCommandIndex === commands.length,
+                success: currentCommandIndex === commands.length && commandError === null,
                 output: this.cleanOutput(output),
-                exitCode: 0,
+                error: commandError || undefined,
+                exitCode: commandError === null ? 0 : 1,
               });
             }
           })
@@ -491,10 +498,12 @@ export class SSHManager extends EventEmitter {
                     clearInterval(dataCheckInterval);
                     commandExecuted = true;
                     stream.end();
+                    const commandError = getDeviceCommandError(output);
                     resolve({
-                      success: true,
+                      success: commandError === null,
                       output: this.cleanOutput(output),
-                      exitCode: 0,
+                      error: commandError || undefined,
+                      exitCode: commandError === null ? 0 : 1,
                     });
                   }
                 }, 2000); // 增加到2秒等待

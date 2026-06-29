@@ -12,6 +12,7 @@ import { notifier } from './notifier';
 import { credentialManager } from './credential-manager';
 import { prisma } from './prisma-client';
 import {
+  assertRuleVerificationSucceeded,
   collectIntegrityCheckIssues,
   createNatRulePayloads,
   createRuleSnapshots,
@@ -664,10 +665,7 @@ class AutomationService extends EventEmitter {
       // 6. 验证规则（如果启用）
       if (securityOptions.includes('verifyRules')) {
         const verified = await this.verifyRules(deviceId, device.name, newIP, rules.length);
-        if (!verified) {
-          await logger.warning('规则更新', `设备 ${device.name} 规则验证失败，但更新已完成`);
-          // 验证失败不影响更新结果，但记录警告
-        }
+        assertRuleVerificationSucceeded(verified);
       }
 
       await logger.success('规则更新', `设备 ${device.name} 更新了 ${rules.length} 条规则`);

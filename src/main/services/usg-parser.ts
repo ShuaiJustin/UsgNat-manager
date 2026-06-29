@@ -61,7 +61,7 @@ export class USGParser {
   private parseNatServerLine(line: string): ParsedNatRule | null {
     // 匹配带名称的规则（支持no-reverse参数）
     const namedPattern =
-      /nat\s+server\s+(\S+)\s+protocol\s+(tcp|udp|all)\s+global\s+(\S+)\s+(\d+)\s+inside\s+(\S+)\s+(\d+)(.*)$/i;
+      /nat\s+server\s+(?:name\s+)?(\S+)\s+protocol\s+(tcp|udp|all)\s+global\s+(\S+)\s+(\d+)\s+inside\s+(\S+)\s+(\d+)(.*)$/i;
     const namedMatch = line.match(namedPattern);
 
     if (namedMatch) {
@@ -74,7 +74,7 @@ export class USGParser {
         insideIp: namedMatch[5],
         insidePort: namedMatch[6],
         enabled: !line.includes('undo'),
-        noReverse: additionalParams.includes('no-reverse'),
+        noReverse: /no-reverse/i.test(additionalParams),
       };
     }
 
@@ -93,7 +93,7 @@ export class USGParser {
         insideIp: match[4],
         insidePort: match[5],
         enabled: !line.includes('undo'),
-        noReverse: additionalParams.includes('no-reverse'),
+        noReverse: /no-reverse/i.test(additionalParams),
       };
     }
 
@@ -141,7 +141,7 @@ export class USGParser {
     let command = '';
 
     if (rule.ruleName && !rule.ruleName.startsWith('NAT_')) {
-      command = `nat server ${rule.ruleName} protocol ${protocol} global ${rule.globalIp} ${rule.globalPort} inside ${rule.insideIp} ${rule.insidePort}`;
+      command = `nat server name ${rule.ruleName} protocol ${protocol} global ${rule.globalIp} ${rule.globalPort} inside ${rule.insideIp} ${rule.insidePort}`;
     } else {
       command = `nat server protocol ${protocol} global ${rule.globalIp} ${rule.globalPort} inside ${rule.insideIp} ${rule.insidePort}`;
     }

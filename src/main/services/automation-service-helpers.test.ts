@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  assertRuleVerificationSucceeded,
   collectIntegrityCheckIssues,
   createNatRulePayloads,
   createRuleSnapshots,
@@ -162,4 +163,9 @@ test('creates NAT rule payloads for command generation', () => {
       },
     ]
   );
+});
+
+test('turns enabled rule verification failures into update-blocking errors', () => {
+  assert.doesNotThrow(() => assertRuleVerificationSucceeded(true));
+  assert.throws(() => assertRuleVerificationSucceeded(false), /verification/i);
 });

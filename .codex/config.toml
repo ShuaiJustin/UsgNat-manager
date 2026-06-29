@@ -1,0 +1,18 @@
+# Codex 技术配置模板。
+# 按你的环境调整模型名、MCP 服务和本地设置。
+
+model = "gpt-5"
+approval_policy = "on-request"
+
+[project]
+name = "project"
+docs = ["Product-Spec.md", "Design-Brief.md", "DEV-PLAN.md"]
+
+[commands]
+verify = ""
+dev = ""
+build = ""
+test = ""
+
+[mcp]
+# 需要时在这里添加 MCP 服务。
