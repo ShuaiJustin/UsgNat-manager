@@ -27,6 +27,17 @@ type AutomationRuleWithIdLike = AutomationRulePayloadInput & {
   id: string;
 };
 
+type BatchUpdateIPCommandBuilder = {
+  parseNatServerList: (output: string) => ParsedNatRule[];
+  generateDeleteNatServerCommand: (rule: ParsedNatRule) => string;
+  generateNatServerCommand: (rule: ParsedNatRule) => string;
+  generateBatchUpdateIPCommands: (
+    rules: ParsedNatRule[],
+    newGlobalIp: string,
+    deviceRules?: ParsedNatRule[]
+  ) => string[];
+};
+
 const IPV4_PATTERN = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/;
 
 const isValidIPv4 = (ip: string): boolean => {
@@ -44,6 +55,23 @@ const isValidIPv4 = (ip: string): boolean => {
 
   return true;
 };
+
+const normalizeNatProtocol = (protocol: string): ParsedNatRule['protocol'] => {
+  const normalized = protocol.toUpperCase();
+
+  if (normalized === 'TCP' || normalized === 'UDP' || normalized === 'ALL') {
+    return normalized;
+  }
+
+  return normalized as ParsedNatRule['protocol'];
+};
+
+const hasSameRuleIdentity = (left: ParsedNatRule, right: ParsedNatRule): boolean =>
+  left.ruleName === right.ruleName ||
+  (left.protocol.toUpperCase() === right.protocol.toUpperCase() &&
+    left.globalPort === right.globalPort &&
+    left.insideIp === right.insideIp &&
+    left.insidePort === right.insidePort);
 
 export const parseScheduledTimeParts = (
   scheduledTime: string
@@ -151,7 +179,7 @@ export const createNatRulePayloads = (
 ): ParsedNatRule[] =>
   rules.map((rule) => ({
     ruleName: rule.ruleName,
-    protocol: rule.protocol as ParsedNatRule['protocol'],
+    protocol: normalizeNatProtocol(rule.protocol),
     globalIp: rule.globalIp,
     globalPort: rule.globalPort,
     insideIp: rule.insideIp,
@@ -159,6 +187,128 @@ export const createNatRulePayloads = (
     enabled: rule.enabled,
     noReverse: rule.noReverse || false,
   }));
+
+export const buildBatchUpdateIPCommands = (
+  rules: readonly AutomationRulePayloadInput[],
+  newIP: string,
+  deviceNatConfigOutput: string | null | undefined,
+  commandBuilder: BatchUpdateIPCommandBuilder
+): string[] => {
+  if (deviceNatConfigOutput == null) {
+    throw new Error('未获取到设备当前NAT规则，已停止批量更新');
+  }
+
+  const deviceRules = deviceNatConfigOutput?.trim()
+    ? commandBuilder.parseNatServerList(deviceNatConfigOutput)
+    : [];
+
+  return commandBuilder.generateBatchUpdateIPCommands(
+    createNatRulePayloads(rules),
+    newIP,
+    deviceRules
+  );
+};
+
+export const resolveScheduledUpdateIP = (
+  pendingIP: string | null | undefined,
+  currentIP: string | null | undefined
+): string | null => pendingIP || currentIP || null;
+
+export const shouldScheduleDailyUpdate = (config: {
+  autoUpdateEnabled?: boolean | null;
+  triggerType?: string | null;
+  scheduledTime?: string | null;
+}): boolean =>
+  config.autoUpdateEnabled === true &&
+  config.triggerType === 'scheduled' &&
+  Boolean(config.scheduledTime);
+
+export const shouldClearPendingUpdateTasks = (
+  previousConfig: {
+    autoUpdateEnabled?: boolean | null;
+    triggerType?: string | null;
+    scheduledTime?: string | null;
+  },
+  nextConfig: {
+    autoUpdateEnabled?: boolean | null;
+    triggerType?: string | null;
+    scheduledTime?: string | null;
+  }
+): boolean =>
+  previousConfig.autoUpdateEnabled !== nextConfig.autoUpdateEnabled ||
+  previousConfig.triggerType !== nextConfig.triggerType ||
+  previousConfig.scheduledTime !== nextConfig.scheduledTime;
+
+export const shouldClearPendingScheduledIP = (
+  previousConfig: {
+    autoUpdateEnabled?: boolean | null;
+    triggerType?: string | null;
+  },
+  nextConfig: {
+    autoUpdateEnabled?: boolean | null;
+    triggerType?: string | null;
+  }
+): boolean =>
+  previousConfig.autoUpdateEnabled === true &&
+  previousConfig.triggerType === 'scheduled' &&
+  (nextConfig.autoUpdateEnabled !== true || nextConfig.triggerType !== 'scheduled');
+
+export const buildScopedRollbackCommands = (
+  oldRules: readonly AutomationRuleWithIdLike[],
+  currentDeviceNatConfigOutput: string | null | undefined,
+  commandBuilder: BatchUpdateIPCommandBuilder
+): string[] => {
+  const parsedOldRules = createNatRulePayloads(oldRules);
+  const currentDeviceRules = currentDeviceNatConfigOutput?.trim()
+    ? commandBuilder.parseNatServerList(currentDeviceNatConfigOutput)
+    : [];
+  const commands: string[] = ['system-view'];
+
+  for (const oldRule of parsedOldRules) {
+    const currentRule = currentDeviceRules.find((rule) => hasSameRuleIdentity(rule, oldRule));
+    if (currentRule) {
+      commands.push(commandBuilder.generateDeleteNatServerCommand(currentRule));
+    }
+
+    if (oldRule.enabled) {
+      commands.push(
+        commandBuilder.generateNatServerCommand({
+          ...oldRule,
+          addSyntax: currentRule?.addSyntax || oldRule.addSyntax,
+        })
+      );
+    }
+  }
+
+  commands.push('quit');
+  commands.push('save');
+  commands.push('y');
+
+  return commands;
+};
+
+export const getUpdatedRuleVerificationIssues = (
+  expectedRules: readonly AutomationRulePayloadInput[],
+  newIP: string,
+  deviceNatConfigOutput: string | null | undefined,
+  commandBuilder: Pick<BatchUpdateIPCommandBuilder, 'parseNatServerList'>
+): string[] => {
+  const deviceRules = deviceNatConfigOutput?.trim()
+    ? commandBuilder.parseNatServerList(deviceNatConfigOutput)
+    : [];
+  const issues: string[] = [];
+
+  for (const expectedRule of createNatRulePayloads(expectedRules)) {
+    const updatedRule = { ...expectedRule, globalIp: newIP };
+    const matchedRule = deviceRules.find((rule) => hasSameRuleIdentity(rule, updatedRule));
+
+    if (!matchedRule || matchedRule.globalIp !== newIP) {
+      issues.push(`规则 ${expectedRule.ruleName} 未在设备上生效`);
+    }
+  }
+
+  return issues;
+};
 
 export const assertRuleVerificationSucceeded = (verified: boolean): void => {
   if (!verified) {

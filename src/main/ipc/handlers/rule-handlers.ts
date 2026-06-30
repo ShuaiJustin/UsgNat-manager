@@ -26,6 +26,32 @@ type RuleUpdatePayload = Partial<RuleWritePayload>;
 const getErrorMessage = (error: unknown): string =>
   error instanceof Error ? error.message : String(error);
 
+const ensureSshConnected = async (
+  deviceId: string,
+  device: Device,
+  credential: Awaited<ReturnType<typeof credentialManager.getCredential>>
+): Promise<void> => {
+  if (sshManager.isConnected(deviceId)) {
+    return;
+  }
+
+  if (!credential) {
+    throw new Error('未配置凭据');
+  }
+
+  const reconnectResult = await sshManager.connect(deviceId, {
+    host: device.host,
+    port: device.port,
+    username: credential.username || 'admin',
+    password: credential.password,
+    privateKey: credential.privateKey,
+  });
+
+  if (!reconnectResult.success) {
+    throw new Error(`重新连接失败: ${reconnectResult.message}`);
+  }
+};
+
 export function registerRuleHandlers() {
   ipcMain.handle('rule:getAll', async (event, deviceId: string) => {
     return await prisma.natRule.findMany({
@@ -371,6 +397,17 @@ export function registerRuleHandlers() {
           throw new Error(`连接失败: ${connectResult.message}`);
         }
 
+        const queryCommand = 'display current-configuration | include nat server';
+        const queryResult = await sshManager.executeCommand(deviceId, queryCommand);
+        if (!queryResult.success) {
+          throw new Error(`未获取到设备当前NAT规则: ${queryResult.error || '查询失败'}`);
+        }
+
+        const deviceRules =
+          queryResult.success && queryResult.output?.trim()
+            ? usgParser.parseNatServerList(queryResult.output)
+            : [];
+
         // 生成更新命令
         const parsedRules = rules.map((r) => ({
           ruleName: r.ruleName,
@@ -383,7 +420,9 @@ export function registerRuleHandlers() {
           noReverse: r.noReverse || false,
         }));
 
-        const commands = usgParser.generateBatchUpdateIPCommands(parsedRules, newIP);
+        const commands = usgParser.generateBatchUpdateIPCommands(parsedRules, newIP, deviceRules);
+
+        await ensureSshConnected(deviceId, device, credential);
 
         // 使用批量命令执行方法
         const updateResult = await sshManager.executeBatchCommands(deviceId, commands);
@@ -392,6 +431,8 @@ export function registerRuleHandlers() {
           await logger.error('批量更新', '命令执行失败', {
             deviceName: device.name,
             error: updateResult.error,
+            commandCount: commands.length,
+            output: updateResult.output?.substring(0, 1000),
           });
           throw new Error(`命令执行失败: ${updateResult.error || '未知错误'}`);
         }

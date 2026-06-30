@@ -5,7 +5,7 @@ import { app } from 'electron';
 import fs from 'fs/promises';
 import path from 'path';
 import { ipMonitor, IPChangeEvent, type IPMonitorConfig } from './ip-monitor';
-import { sshManager } from './ssh-manager';
+import { sshManager, type SSHConfig } from './ssh-manager';
 import { usgParser } from './usg-parser';
 import { logger } from './logger';
 import { notifier } from './notifier';
@@ -13,10 +13,16 @@ import { credentialManager } from './credential-manager';
 import { prisma } from './prisma-client';
 import {
   assertRuleVerificationSucceeded,
+  buildBatchUpdateIPCommands,
+  buildScopedRollbackCommands,
   collectIntegrityCheckIssues,
-  createNatRulePayloads,
   createRuleSnapshots,
+  getUpdatedRuleVerificationIssues,
   parseScheduledTimeParts,
+  resolveScheduledUpdateIP,
+  shouldClearPendingScheduledIP,
+  shouldClearPendingUpdateTasks,
+  shouldScheduleDailyUpdate,
 } from './automation-service-helpers';
 import { DEFAULT_IP_CHECK_SOURCES } from '../ip-check-sources';
 
@@ -178,49 +184,7 @@ class AutomationService extends EventEmitter {
           return;
         }
 
-        // 解析定时时间（格式: "HH:mm"）
-        try {
-          const scheduledTimeParts = parseScheduledTimeParts(this.config.scheduledTime);
-
-          if (!scheduledTimeParts) {
-            await logger.error('自动更新', `定时时间格式错误: ${this.config.scheduledTime}`);
-            return;
-          }
-
-          // 取消之前的定时任务
-          if (this.scheduledJob) {
-            this.scheduledJob.cancel();
-            await logger.info('自动更新', '取消之前的定时任务');
-          }
-
-          // 创建新的定时任务规则
-          const rule = new schedule.RecurrenceRule();
-          rule.hour = scheduledTimeParts.hour;
-          rule.minute = scheduledTimeParts.minute;
-          rule.tz = 'Asia/Shanghai'; // 使用中国时区
-
-          // 安排定时任务
-          this.scheduledJob = schedule.scheduleJob(rule, async () => {
-            try {
-              if (this.pendingIP) {
-                await logger.info('自动更新', `定时任务触发，使用IP: ${this.pendingIP}`);
-                await this.executeUpdate(this.pendingIP);
-              } else {
-                await logger.warning('自动更新', '定时任务触发，但没有待更新的IP');
-              }
-            } catch (error: unknown) {
-              await logger.error('自动更新', '定时任务执行失败', { error: getErrorMessage(error) });
-            }
-          });
-
-          await logger.success(
-            '自动更新',
-            `已安排定时任务，每天 ${this.config.scheduledTime} 执行更新`,
-            { pendingIP: this.pendingIP }
-          );
-        } catch (error: unknown) {
-          await logger.error('自动更新', '创建定时任务失败', { error: getErrorMessage(error) });
-        }
+        this.rescheduleTask(this.config.scheduledTime);
         break;
       }
     }
@@ -430,35 +394,17 @@ class AutomationService extends EventEmitter {
     try {
       await logger.info('规则回滚', `开始回滚设备 ${deviceName} 的规则`);
 
-      // 生成回滚命令（恢复旧规则）
-      const parsedRules = createNatRulePayloads(oldRules);
-
       // 先获取当前设备上的规则，删除所有，然后恢复旧规则
       const currentRulesResult = await sshManager.executeCommand(
         deviceId,
         'display current-configuration | include nat server'
       );
 
-      const commands: string[] = ['system-view'];
-
-      // 如果有当前规则，先删除
-      if (currentRulesResult.success && currentRulesResult.output) {
-        const currentRules = usgParser.parseNatServerList(currentRulesResult.output);
-        for (const rule of currentRules) {
-          commands.push(usgParser.generateDeleteNatServerCommand(rule));
-        }
-      }
-
-      // 恢复旧规则
-      for (const rule of parsedRules) {
-        if (rule.enabled) {
-          commands.push(usgParser.generateNatServerCommand(rule));
-        }
-      }
-
-      commands.push('quit');
-      commands.push('save');
-      commands.push('y');
+      const commands = buildScopedRollbackCommands(
+        oldRules,
+        currentRulesResult.success ? currentRulesResult.output : undefined,
+        usgParser
+      );
 
       const rollbackResult = await sshManager.executeBatchCommands(deviceId, commands);
       if (!rollbackResult.success) {
@@ -490,7 +436,7 @@ class AutomationService extends EventEmitter {
     deviceId: string,
     deviceName: string,
     newIP: string,
-    expectedCount: number
+    rules: RuleSnapshot[]
   ): Promise<boolean> {
     try {
       const verifyCommand = 'display current-configuration | include nat server';
@@ -501,26 +447,17 @@ class AutomationService extends EventEmitter {
         return false;
       }
 
-      const deviceRules = usgParser.parseNatServerList(result.output);
-      const rulesWithNewIP = deviceRules.filter((r) => r.globalIp === newIP);
-
-      if (rulesWithNewIP.length !== expectedCount) {
-        await logger.warning('规则验证', `设备 ${deviceName} 验证失败: 规则数量不匹配`, {
-          expected: expectedCount,
-          actual: rulesWithNewIP.length,
+      const issues = getUpdatedRuleVerificationIssues(rules, newIP, result.output, usgParser);
+      if (issues.length > 0) {
+        await logger.warning('规则验证', `设备 ${deviceName} 验证失败`, {
+          expected: rules.length,
+          issues,
         });
         return false;
       }
 
-      // 验证所有规则都包含新IP
-      const allMatch = deviceRules.every((r) => r.globalIp === newIP || !r.enabled);
-      if (!allMatch) {
-        await logger.warning('规则验证', `设备 ${deviceName} 验证失败: 部分规则IP不匹配`);
-        return false;
-      }
-
       await logger.success('规则验证', `设备 ${deviceName} 规则验证通过`, {
-        ruleCount: rulesWithNewIP.length,
+        ruleCount: rules.length,
       });
       return true;
     } catch (error: unknown) {
@@ -639,20 +576,35 @@ class AutomationService extends EventEmitter {
       }
 
       // 3. 生成更新命令（先验证命令序列）
-      const parsedRules = createNatRulePayloads(rules);
-
-      const commands = usgParser.generateBatchUpdateIPCommands(parsedRules, newIP);
+      const currentRulesResult = await sshManager.executeCommand(
+        deviceId,
+        'display current-configuration | include nat server'
+      );
+      const commands = buildBatchUpdateIPCommands(
+        rules,
+        newIP,
+        currentRulesResult.success ? currentRulesResult.output : undefined,
+        usgParser
+      );
 
       // 验证命令序列（确保至少包含system-view和save）
       if (commands.length < 3) {
         throw new Error('生成的命令序列无效');
       }
 
+      await this.ensureDeviceConnected(deviceId, device, credential);
+
       // 4. 执行更新命令（原子性操作）
       // 使用批量执行确保要么全部成功，要么全部失败
       const executeResult = await sshManager.executeBatchCommands(deviceId, commands);
 
       if (!executeResult.success) {
+        await logger.error('规则更新', '命令执行失败', {
+          deviceName: device.name,
+          error: executeResult.error,
+          commandCount: commands.length,
+          output: executeResult.output?.substring(0, 1000),
+        });
         throw new Error(`命令执行失败: ${executeResult.error || '未知错误'}`);
       }
 
@@ -664,7 +616,7 @@ class AutomationService extends EventEmitter {
 
       // 6. 验证规则（如果启用）
       if (securityOptions.includes('verifyRules')) {
-        const verified = await this.verifyRules(deviceId, device.name, newIP, rules.length);
+        const verified = await this.verifyRules(deviceId, device.name, newIP, rules);
         assertRuleVerificationSucceeded(verified);
       }
 
@@ -699,6 +651,32 @@ class AutomationService extends EventEmitter {
   /**
    * 启动自动化服务
    */
+  private async ensureDeviceConnected(
+    deviceId: string,
+    device: { host: string; port: number },
+    credential: {
+      username?: string | null;
+      password?: string;
+      privateKey?: SSHConfig['privateKey'];
+    }
+  ): Promise<void> {
+    if (sshManager.isConnected(deviceId)) {
+      return;
+    }
+
+    const reconnectResult = await sshManager.connect(deviceId, {
+      host: device.host,
+      port: device.port,
+      username: credential.username || 'admin',
+      password: credential.password,
+      privateKey: credential.privateKey,
+    });
+
+    if (!reconnectResult.success) {
+      throw new Error(`重新连接失败: ${reconnectResult.message}`);
+    }
+  }
+
   async start(config: AutomationConfig) {
     this.config = { ...this.config, ...config };
 
@@ -723,6 +701,11 @@ class AutomationService extends EventEmitter {
 
     // 启动IP监控
     await ipMonitor.start();
+
+    if (shouldScheduleDailyUpdate(this.config)) {
+      this.rescheduleTask(this.config.scheduledTime || '');
+    }
+
     this.emit('started');
   }
 
@@ -783,9 +766,18 @@ class AutomationService extends EventEmitter {
       });
     }
 
-    // 如果更新了触发类型或定时时间，需要重新安排定时任务
-    if (config.triggerType !== undefined && config.triggerType !== oldConfig.triggerType) {
-      // 触发类型改变，先取消旧任务
+    const shouldResetUpdateTasks = shouldClearPendingUpdateTasks(oldConfig, this.config);
+
+    if (shouldClearPendingScheduledIP(oldConfig, this.config)) {
+      this.pendingIP = null;
+    }
+
+    if (shouldResetUpdateTasks) {
+      if (this.delayTimer) {
+        clearTimeout(this.delayTimer);
+        this.delayTimer = null;
+      }
+
       if (this.scheduledJob) {
         this.scheduledJob.cancel();
         this.scheduledJob = null;
@@ -793,23 +785,10 @@ class AutomationService extends EventEmitter {
           console.error('记录日志失败:', err);
         });
       }
+    }
 
-      // 如果切换到定时更新，安排新任务
-      if (this.config.triggerType === 'scheduled' && this.config.scheduledTime && this.pendingIP) {
-        this.rescheduleTask(this.config.scheduledTime, this.pendingIP);
-      }
-    } else if (
-      config.scheduledTime !== undefined &&
-      config.scheduledTime !== oldConfig.scheduledTime
-    ) {
-      // 仅定时时间改变，重新安排任务
-      if (this.config.triggerType === 'scheduled' && this.config.scheduledTime) {
-        if (this.scheduledJob) {
-          this.scheduledJob.cancel();
-          this.scheduledJob = null;
-        }
-        this.rescheduleTask(this.config.scheduledTime, this.pendingIP || '');
-      }
+    if (shouldResetUpdateTasks && shouldScheduleDailyUpdate(this.config)) {
+      this.rescheduleTask(this.config.scheduledTime || '');
     }
 
     this.emit('config-updated', this.config);
@@ -818,8 +797,13 @@ class AutomationService extends EventEmitter {
   /**
    * 重新安排定时任务
    */
-  private rescheduleTask(scheduledTime: string, pendingIP: string) {
+  private rescheduleTask(scheduledTime: string) {
     try {
+      if (this.scheduledJob) {
+        this.scheduledJob.cancel();
+        this.scheduledJob = null;
+      }
+
       const scheduledTimeParts = parseScheduledTimeParts(scheduledTime);
 
       if (!scheduledTimeParts) {
@@ -834,11 +818,13 @@ class AutomationService extends EventEmitter {
 
       this.scheduledJob = schedule.scheduleJob(rule, async () => {
         try {
-          if (this.pendingIP) {
-            await logger.info('自动更新', `定时任务触发，使用IP: ${this.pendingIP}`);
-            await this.executeUpdate(this.pendingIP);
+          const updateIP = resolveScheduledUpdateIP(this.pendingIP, ipMonitor.getCurrentIPSync());
+
+          if (updateIP) {
+            await logger.info('自动更新', `定时任务触发，使用IP: ${updateIP}`);
+            await this.executeUpdate(updateIP);
           } else {
-            await logger.warning('自动更新', '定时任务触发，但没有待更新的IP');
+            await logger.warning('自动更新', '定时任务触发，但没有可用IP');
           }
         } catch (error: unknown) {
           await logger.error('自动更新', '定时任务执行失败', { error: getErrorMessage(error) });
@@ -846,7 +832,9 @@ class AutomationService extends EventEmitter {
       });
 
       logger
-        .success('自动更新', `定时任务已更新，每天 ${scheduledTime} 执行`, { pendingIP })
+        .success('自动更新', `定时任务已更新，每天 ${scheduledTime} 执行`, {
+          pendingIP: this.pendingIP,
+        })
         .catch((err) => {
           console.error('记录日志失败:', err);
         });

@@ -3,10 +3,22 @@ import { EventEmitter } from 'events';
 import { Buffer } from 'buffer';
 import { logger } from './logger';
 import {
+  getBatchShellOpenRecoveryAction,
+  getBatchShellStartupAction,
   getDeviceCommandError,
+  getShellCommandFinishAction,
+  formatBatchCommandError,
+  hasBatchCommandResponse,
   isBenignSshDisconnectError,
   isCliPromptReady,
 } from './ssh-manager-helpers';
+
+const BATCH_PROMPT_NUDGE_DELAY_MS = 300;
+const BATCH_COMMAND_START_FALLBACK_MS = 1200;
+const BATCH_SHELL_OPEN_RECOVERY_MS = 3000;
+
+const getErrorMessage = (error: unknown): string =>
+  error instanceof Error ? error.message : String(error);
 
 /**
  * SSH连接配置
@@ -48,6 +60,7 @@ export interface SSHCommandResult {
 export class SSHManager extends EventEmitter {
   private connections: Map<string, Client> = new Map();
   private connectionStatus: Map<string, boolean> = new Map();
+  private connectionConfigs: Map<string, SSHConfig> = new Map();
   private disconnectingDevices: Set<string> = new Set();
 
   constructor() {
@@ -80,7 +93,7 @@ export class SSHManager extends EventEmitter {
             message: '连接超时',
           });
         }
-      }, config.timeout || 15000); // Server环境需要更长超时时间
+      }, config.timeout || 15000);
 
       client
         .on('ready', () => {
@@ -129,13 +142,14 @@ export class SSHManager extends EventEmitter {
             message: '连接超时',
           });
         }
-      }, config.timeout || 15000); // Server环境需要更长超时时间
+      }, config.timeout || 15000);
 
       client
         .on('ready', () => {
           connected = true;
           clearTimeout(timeout);
           this.connections.set(deviceId, client);
+          this.connectionConfigs.set(deviceId, { ...config });
           this.connectionStatus.set(deviceId, true);
 
           const latency = Date.now() - startTime;
@@ -191,6 +205,7 @@ export class SSHManager extends EventEmitter {
       this.disconnectingDevices.add(deviceId);
       client.end();
       this.connections.delete(deviceId);
+      this.connectionConfigs.delete(deviceId);
       this.connectionStatus.set(deviceId, false);
     }
   }
@@ -205,7 +220,7 @@ export class SSHManager extends EventEmitter {
   async executeCommand(
     deviceId: string,
     command: string,
-    timeout: number = 30000 // Server环境恢复到30秒超时
+    timeout: number = 30000
   ): Promise<SSHCommandResult> {
     const client = this.connections.get(deviceId);
 
@@ -221,18 +236,50 @@ export class SSHManager extends EventEmitter {
       let output = '';
       let commandExecuted = false;
       let activeStream: { end: () => void } | null = null;
+      let pendingResult: SSHCommandResult | null = null;
+      let waitingForStreamClose = false;
+      let streamCloseFallbackTimer: ReturnType<typeof setTimeout> | null = null;
 
       const finish = (result: SSHCommandResult) => {
+        clearTimeout(timer);
+        const action = getShellCommandFinishAction({
+          resolved: commandExecuted,
+          waitingForStreamClose,
+          hasActiveStream: Boolean(activeStream),
+        });
+
+        if (action === 'ignore') {
+          return;
+        }
+
+        if (action === 'wait-for-stream-close') {
+          pendingResult = result;
+          waitingForStreamClose = true;
+          streamCloseFallbackTimer = setTimeout(() => {
+            resolvePendingResult(result);
+          }, 1500);
+          activeStream?.end();
+          return;
+        }
+
+        commandExecuted = true;
+        resolve(result);
+      };
+
+      const resolvePendingResult = (fallback: SSHCommandResult) => {
         if (commandExecuted) {
           return;
         }
 
         clearTimeout(timer);
+        if (streamCloseFallbackTimer) {
+          clearTimeout(streamCloseFallbackTimer);
+          streamCloseFallbackTimer = null;
+        }
         commandExecuted = true;
-        const streamToClose = activeStream;
         activeStream = null;
-        streamToClose?.end();
-        resolve(result);
+        waitingForStreamClose = false;
+        resolve(pendingResult || fallback);
       };
 
       const timer = setTimeout(() => {
@@ -245,6 +292,11 @@ export class SSHManager extends EventEmitter {
 
       // 使用shell模式而不是exec模式，适用于需要交互式登录的设备
       client.shell((err, stream) => {
+        if (commandExecuted) {
+          stream?.end();
+          return;
+        }
+
         if (err) {
           finish({
             success: false,
@@ -260,15 +312,13 @@ export class SSHManager extends EventEmitter {
 
         stream
           .on('close', () => {
-            if (!commandExecuted) {
-              const commandError = getDeviceCommandError(output);
-              finish({
-                success: commandError === null,
-                output: this.cleanOutput(output),
-                error: commandError || undefined,
-                exitCode: commandError === null ? 0 : 1,
-              });
-            }
+            const commandError = getDeviceCommandError(output);
+            resolvePendingResult({
+              success: commandError === null,
+              output: this.cleanOutput(output),
+              error: commandError || undefined,
+              exitCode: commandError === null ? 0 : 1,
+            });
           })
           .on('error', (err: Error) => {
             if (!commandExecuted) {
@@ -286,7 +336,7 @@ export class SSHManager extends EventEmitter {
             // 检测到命令提示符后，发送命令
             if (waitForPrompt && this.isPromptReady(text)) {
               waitForPrompt = false;
-              output = ''; // 清空之前的欢迎信息
+              output = '';
               stream.write(command + '\n');
               commandSent = true;
               return;
@@ -360,7 +410,7 @@ export class SSHManager extends EventEmitter {
   async executeCommands(
     deviceId: string,
     commands: string[],
-    timeout: number = 30000 // Server环境恢复到30秒超时
+    timeout: number = 30000
   ): Promise<SSHCommandResult[]> {
     const results: SSHCommandResult[] = [];
 
@@ -383,9 +433,11 @@ export class SSHManager extends EventEmitter {
   async executeBatchCommands(
     deviceId: string,
     commands: string[],
-    timeout: number = 90000 // 批量命令需要更长超时（90秒）
+    timeout: number = 90000
   ): Promise<SSHCommandResult> {
     const client = this.connections.get(deviceId);
+    let activeClient = client;
+    const reconnectConfig = this.connectionConfigs.get(deviceId);
 
     if (!client) {
       return {
@@ -401,9 +453,22 @@ export class SSHManager extends EventEmitter {
       let currentCommandIndex = 0;
       let waitForPrompt = true;
       let lastDataTime = Date.now();
+      let startupCheckInterval: ReturnType<typeof setInterval> | null = null;
+      let shellOpenCheckInterval: ReturnType<typeof setInterval> | null = null;
+      let activeCommand: string | null = null;
+      let activeCommandOutput = '';
+      let nextCommandTimer: ReturnType<typeof setTimeout> | null = null;
+      let completionTimer: ReturnType<typeof setTimeout> | null = null;
+      let shellOpened = false;
+      let attemptedShellRecovery = false;
+      let shellRecoveryInProgress = false;
+      let shellOpenStartedAt = Date.now();
+      let shellOpenAttempt = 0;
+      let activeCommandNumber = 0;
 
       const timer = setTimeout(() => {
         if (!commandExecuted) {
+          clearBatchTimers();
           commandExecuted = true;
           resolve({
             success: false,
@@ -418,8 +483,7 @@ export class SSHManager extends EventEmitter {
         const now = Date.now();
         if (now - lastDataTime > 30000 && !commandExecuted) {
           // 30秒内没有收到数据，可能设备无响应
-          clearTimeout(timer);
-          clearInterval(dataCheckInterval);
+          clearBatchTimers();
           commandExecuted = true;
           resolve({
             success: false,
@@ -429,97 +493,326 @@ export class SSHManager extends EventEmitter {
         }
       }, 5000);
 
-      client.shell((err, stream) => {
-        if (err) {
-          clearTimeout(timer);
-          clearInterval(dataCheckInterval);
+      const clearBatchTimers = () => {
+        clearTimeout(timer);
+        clearInterval(dataCheckInterval);
+        if (startupCheckInterval) {
+          clearInterval(startupCheckInterval);
+          startupCheckInterval = null;
+        }
+        if (shellOpenCheckInterval) {
+          clearInterval(shellOpenCheckInterval);
+          shellOpenCheckInterval = null;
+        }
+        if (nextCommandTimer) {
+          clearTimeout(nextCommandTimer);
+          nextCommandTimer = null;
+        }
+        if (completionTimer) {
+          clearTimeout(completionTimer);
+          completionTimer = null;
+        }
+      };
+
+      const openBatchShell = () => {
+        shellOpenAttempt++;
+        const attempt = shellOpenAttempt;
+
+        activeClient?.shell((err, stream) => {
+          if (attempt !== shellOpenAttempt || commandExecuted) {
+            stream?.end();
+            return;
+          }
+
+          shellOpened = true;
+          if (shellOpenCheckInterval) {
+            clearInterval(shellOpenCheckInterval);
+            shellOpenCheckInterval = null;
+          }
+
+          if (err) {
+            clearBatchTimers();
+            commandExecuted = true;
+            resolve({
+              success: false,
+              output: '',
+              error: `创建shell失败: ${err.message}`,
+            });
+            return;
+          }
+
+          const sendNextCommand = (): boolean => {
+            if (currentCommandIndex >= commands.length) {
+              return false;
+            }
+
+            activeCommand = commands[currentCommandIndex];
+            activeCommandNumber = currentCommandIndex + 1;
+            activeCommandOutput = '';
+            stream.write(activeCommand + '\n');
+            currentCommandIndex++;
+            return true;
+          };
+          const shellPromptWaitStartedAt = Date.now();
+          let promptNudged = false;
+
+          startupCheckInterval = setInterval(() => {
+            if (commandExecuted || !waitForPrompt) {
+              if (startupCheckInterval) {
+                clearInterval(startupCheckInterval);
+                startupCheckInterval = null;
+              }
+              return;
+            }
+
+            const action = getBatchShellStartupAction({
+              waitForPrompt,
+              currentCommandIndex,
+              commandCount: commands.length,
+              elapsedMs: Date.now() - shellPromptWaitStartedAt,
+              promptNudged,
+              nudgeAfterMs: BATCH_PROMPT_NUDGE_DELAY_MS,
+              startAfterMs: BATCH_COMMAND_START_FALLBACK_MS,
+            });
+
+            if (action === 'nudge-prompt') {
+              stream.write('\n');
+              promptNudged = true;
+              return;
+            }
+
+            if (action === 'start-command') {
+              waitForPrompt = false;
+              output = '';
+              sendNextCommand();
+              if (startupCheckInterval) {
+                clearInterval(startupCheckInterval);
+                startupCheckInterval = null;
+              }
+            }
+          }, 100);
+
+          stream
+            .on('close', () => {
+              if (!commandExecuted) {
+                clearBatchTimers();
+                commandExecuted = true;
+                const commandError = getDeviceCommandError(output);
+                resolve({
+                  success: currentCommandIndex === commands.length && commandError === null,
+                  output: this.cleanOutput(output),
+                  error: commandError
+                    ? formatBatchCommandError({
+                        error: commandError,
+                        commandNumber: activeCommandNumber,
+                        commandCount: commands.length,
+                        command: activeCommand,
+                      })
+                    : undefined,
+                  exitCode: commandError === null ? 0 : 1,
+                });
+              }
+            })
+            .on('error', (err: Error) => {
+              if (!commandExecuted) {
+                clearBatchTimers();
+                commandExecuted = true;
+                resolve({
+                  success: false,
+                  output: output,
+                  error: `Stream错误: ${err.message}`,
+                });
+              }
+            })
+            .on('data', (data: Buffer) => {
+              const text = data.toString();
+              output += text;
+              if (activeCommand) {
+                activeCommandOutput += text;
+              }
+              lastDataTime = Date.now();
+
+              // 首次等待提示符出现
+              if (waitForPrompt && this.isPromptReady(text)) {
+                waitForPrompt = false;
+                output = '';
+
+                // 开始发送第一条命令
+                if (currentCommandIndex < commands.length) {
+                  sendNextCommand();
+                }
+              }
+              // 后续命令：检测到提示符就发送下一条
+              else if (!waitForPrompt && this.isPromptReady(text)) {
+                if (activeCommand && !hasBatchCommandResponse(activeCommandOutput, activeCommand)) {
+                  return;
+                }
+
+                const activeCommandError = getDeviceCommandError(activeCommandOutput);
+                if (activeCommandError) {
+                  clearBatchTimers();
+                  commandExecuted = true;
+                  resolve({
+                    success: false,
+                    output: this.cleanOutput(output),
+                    error: formatBatchCommandError({
+                      error: activeCommandError,
+                      commandNumber: activeCommandNumber,
+                      commandCount: commands.length,
+                      command: activeCommand,
+                    }),
+                    exitCode: 1,
+                  });
+                  return;
+                }
+
+                activeCommand = null;
+                activeCommandOutput = '';
+                activeCommandNumber = 0;
+
+                if (currentCommandIndex < commands.length) {
+                  if (nextCommandTimer) {
+                    return;
+                  }
+
+                  // 短暂延迟，确保设备准备好接收下一条命令
+                  nextCommandTimer = setTimeout(() => {
+                    nextCommandTimer = null;
+                    if (!commandExecuted && currentCommandIndex < commands.length) {
+                      sendNextCommand();
+                    }
+                  }, 200);
+                } else {
+                  if (completionTimer) {
+                    return;
+                  }
+
+                  // 所有命令执行完毕，等待一下再退出
+                  completionTimer = setTimeout(() => {
+                    completionTimer = null;
+                    if (!commandExecuted) {
+                      clearBatchTimers();
+                      commandExecuted = true;
+                      stream.end();
+                      const commandError = getDeviceCommandError(output);
+                      resolve({
+                        success: commandError === null,
+                        output: this.cleanOutput(output),
+                        error: commandError
+                          ? formatBatchCommandError({
+                              error: commandError,
+                              commandNumber: activeCommandNumber,
+                              commandCount: commands.length,
+                              command: activeCommand,
+                            })
+                          : undefined,
+                        exitCode: commandError === null ? 0 : 1,
+                      });
+                    }
+                  }, 2000);
+                }
+              }
+            })
+            .stderr.on('data', (data: Buffer) => {
+              output += data.toString();
+              lastDataTime = Date.now();
+            });
+        });
+      };
+
+      shellOpenCheckInterval = setInterval(() => {
+        if (shellRecoveryInProgress) {
+          return;
+        }
+
+        const action = getBatchShellOpenRecoveryAction({
+          shellOpened,
+          commandExecuted,
+          attemptedRecovery: attemptedShellRecovery,
+          hasReconnectConfig: Boolean(reconnectConfig),
+          elapsedMs: Date.now() - shellOpenStartedAt,
+          recoverAfterMs: BATCH_SHELL_OPEN_RECOVERY_MS,
+        });
+
+        if (action === 'wait') {
+          return;
+        }
+
+        if (action === 'fail') {
+          clearBatchTimers();
           commandExecuted = true;
           resolve({
             success: false,
-            output: '',
-            error: `创建shell失败: ${err.message}`,
+            output,
+            error: `创建shell无响应，已执行 ${currentCommandIndex}/${commands.length} 条命令`,
           });
           return;
         }
 
-        stream
-          .on('close', () => {
-            if (!commandExecuted) {
-              clearTimeout(timer);
-              clearInterval(dataCheckInterval);
-              commandExecuted = true;
-              const commandError = getDeviceCommandError(output);
-              resolve({
-                success: currentCommandIndex === commands.length && commandError === null,
-                output: this.cleanOutput(output),
-                error: commandError || undefined,
-                exitCode: commandError === null ? 0 : 1,
-              });
+        attemptedShellRecovery = true;
+        shellRecoveryInProgress = true;
+        shellOpened = false;
+        shellOpenStartedAt = Date.now();
+        shellOpenAttempt++;
+        this.disconnect(deviceId)
+          .then(() => {
+            if (commandExecuted || !reconnectConfig) {
+              return undefined;
             }
+
+            return this.connect(deviceId, reconnectConfig);
           })
-          .on('error', (err: Error) => {
-            if (!commandExecuted) {
-              clearTimeout(timer);
-              clearInterval(dataCheckInterval);
+          .then((connectResult) => {
+            shellRecoveryInProgress = false;
+
+            if (commandExecuted || !connectResult) {
+              return;
+            }
+
+            if (!connectResult.success) {
+              clearBatchTimers();
               commandExecuted = true;
               resolve({
                 success: false,
-                output: output,
-                error: `Stream错误: ${err.message}`,
+                output,
+                error: `重新连接失败: ${connectResult.message}`,
               });
+              return;
             }
-          })
-          .on('data', (data: Buffer) => {
-            const text = data.toString();
-            output += text;
-            lastDataTime = Date.now();
 
-            // 首次等待提示符出现
-            if (waitForPrompt && this.isPromptReady(text)) {
-              waitForPrompt = false;
-              output = ''; // 清空欢迎信息
+            activeClient = this.connections.get(deviceId);
+            if (!activeClient) {
+              clearBatchTimers();
+              commandExecuted = true;
+              resolve({
+                success: false,
+                output,
+                error: '重新连接后设备未连接',
+              });
+              return;
+            }
 
-              // 开始发送第一条命令
-              if (currentCommandIndex < commands.length) {
-                stream.write(commands[currentCommandIndex] + '\n');
-                currentCommandIndex++;
-              }
-            }
-            // 后续命令：检测到提示符就发送下一条
-            else if (!waitForPrompt && this.isPromptReady(text)) {
-              if (currentCommandIndex < commands.length) {
-                // 短暂延迟，确保设备准备好接收下一条命令
-                setTimeout(() => {
-                  if (!commandExecuted && currentCommandIndex < commands.length) {
-                    stream.write(commands[currentCommandIndex] + '\n');
-                    currentCommandIndex++;
-                  }
-                }, 200); // 增加到200ms延迟
-              } else {
-                // 所有命令执行完毕，等待一下再退出
-                setTimeout(() => {
-                  if (!commandExecuted) {
-                    clearTimeout(timer);
-                    clearInterval(dataCheckInterval);
-                    commandExecuted = true;
-                    stream.end();
-                    const commandError = getDeviceCommandError(output);
-                    resolve({
-                      success: commandError === null,
-                      output: this.cleanOutput(output),
-                      error: commandError || undefined,
-                      exitCode: commandError === null ? 0 : 1,
-                    });
-                  }
-                }, 2000); // 增加到2秒等待
-              }
-            }
+            shellOpenStartedAt = Date.now();
+            openBatchShell();
           })
-          .stderr.on('data', (data: Buffer) => {
-            output += data.toString();
-            lastDataTime = Date.now();
+          .catch((error: unknown) => {
+            shellRecoveryInProgress = false;
+
+            if (commandExecuted) {
+              return;
+            }
+
+            clearBatchTimers();
+            commandExecuted = true;
+            resolve({
+              success: false,
+              output,
+              error: `重新连接异常: ${getErrorMessage(error)}`,
+            });
           });
-      });
+      }, 250);
+
+      openBatchShell();
     });
   }
 
@@ -553,9 +846,9 @@ export class SSHManager extends EventEmitter {
       host: config.host,
       port: config.port,
       username: config.username,
-      readyTimeout: config.timeout || 15000, // Server环境增加到15秒
-      keepaliveInterval: 10000, // 每10秒发送keepalive保持连接
-      keepaliveCountMax: 3, // 最多3次keepalive失败后断开
+      readyTimeout: config.timeout || 15000,
+      keepaliveInterval: 10000,
+      keepaliveCountMax: 3,
       // 添加更广泛的算法支持以兼容不同版本的SSH服务器
       algorithms: {
         kex: [
