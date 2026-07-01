@@ -59,8 +59,17 @@ resources/icons/*
 !resources/icons/icon.ico
 !resources/icons/icon.icns
 !resources/icons/icon.png
+# Local AI agent/template resources
 .claude/
 .agents/
 .codex/
+.codex-plugin/
 AGENTS.md
+PONYTAIL-LICENSE
+ponytail-after-install.md
+使用说明.md
+assets/
+commands/
+hooks/
+skills/
 
