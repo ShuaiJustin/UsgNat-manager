@@ -68,6 +68,10 @@ AGENTS.md
 PONYTAIL-LICENSE
 ponytail-after-install.md
 使用说明.md
+DEV-PLAN.md
+Design-Brief.md
+Product-Spec.md
+Product-Spec-CHANGELOG.md
 assets/
 commands/
 hooks/
