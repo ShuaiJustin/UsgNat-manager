@@ -1,4 +1,4 @@
-# Logs
+﻿# Logs
 /logs/
 *.log
 npm-debug.log*
@@ -14,7 +14,7 @@ dist-ssr
 *.local
 
 # Build
-release
+/release/
 out
 build
 !scripts/build/
@@ -53,7 +53,14 @@ resources/*
 !resources/build/
 resources/build/*
 !resources/build/entitlements.mac.plist
+!resources/icons/
+resources/icons/*
+!resources/icons/app.ico
+!resources/icons/icon.ico
+!resources/icons/icon.icns
+!resources/icons/icon.png
 .claude/
 .agents/
 .codex/
 AGENTS.md
+

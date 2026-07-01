@@ -2,7 +2,7 @@
 
 <div align="center">
 
-![Version](https://img.shields.io/badge/version-1.0.6-blue.svg)
+![Version](https://img.shields.io/badge/version-1.1.6-blue.svg)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
 ![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS-lightgrey.svg)
 ![Node](https://img.shields.io/badge/node-%3E%3D18.0.0-brightgreen.svg)
@@ -171,7 +171,7 @@ USG NAT Manager 是一款基于 Electron + React 开发的现代化桌面应用�
 1. **下载安装包**
 
    ```
-   下载最新版本的安装包: USG-NAT-Manager-Setup-1.0.2.exe
+   下载最新版本的安装包: USG-NAT-Manager-Setup-1.1.6.exe
    ```
 
 2. **运行安装程序**
@@ -193,8 +193,6 @@ cd UsgNat-manager
 ```
 
 #### 2. 安装依赖
-
-7
 
 ```bash
 npm install
@@ -332,10 +330,9 @@ USG1.0.7/
 │   └── icons/
 ├── scripts/
 │   ├── assets/                 # 图标/资源处理脚本
-│   ├── dev/                    # 开发辅助脚本
 │   ├── release/                # 版本与发布脚本
-│   └── setup/
-│       └── github/             # GitHub 初始化脚本
+│   ├── build/                  # 构建清理脚本
+│   └── test/                   # 源码测试入口
 ├── docs/
 │   ├── guides/                 # 使用与发布指南
 │   ├── mockups/                # 演示稿与界面原型
