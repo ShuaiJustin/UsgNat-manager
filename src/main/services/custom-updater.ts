@@ -36,7 +36,6 @@ type UpdateVersionInfo = {
   mandatory?: boolean;
   sha256?: string;
   files?: {
-    asar?: UpdateAssetInfo;
     full?: UpdateAssetInfo;
   };
   _serverUrl?: string;
@@ -404,14 +403,6 @@ class CustomUpdater {
 
         const versionInfo = this.latestVersionInfo;
 
-        // 检查是否支持 ASAR 增量更新
-        if (versionInfo?.files?.asar) {
-          logger.info('自动更新', '检测到 ASAR 增量更新，优先使用');
-          await this.downloadAsarUpdate(versionInfo);
-          return;
-        }
-
-        // 降级到完整安装包下载
         const fullFile = versionInfo?.files?.full;
         if (!fullFile || !fullFile.url) {
           throw new Error('无法获取下载地址');
@@ -766,73 +757,6 @@ class CustomUpdater {
       }
     } catch (error: unknown) {
       await logger.error('自动更新', '清理旧安装包失败', { error: getErrorMessage(error) });
-    }
-  }
-
-  /**
-   * ASAR 增量更新
-   */
-  private async downloadAsarUpdate(versionInfo: UpdateVersionInfo): Promise<void> {
-    const asarInfo = versionInfo.files?.asar;
-    if (!asarInfo?.url) {
-      throw new Error('无法获取 ASAR 下载地址');
-    }
-
-    // 构建下载地址
-    const serverUrl = versionInfo._serverUrl || this.updateServerUrls[0];
-    const downloadUrl = resolveUpdateAssetUrl(asarInfo.url, serverUrl);
-
-    const tempDir = app.getPath('temp');
-    const asarTempPath = path.join(tempDir, `app-${versionInfo.version}.asar`);
-
-    // 下载 ASAR 文件
-    await this.downloadFile(downloadUrl, asarTempPath);
-
-    // 验证文件
-    if (!fs.existsSync(asarTempPath)) {
-      throw new Error('ASAR 文件下载失败');
-    }
-
-    // SHA-256 校验
-    if (asarInfo.sha256) {
-      const fileHash = await this.calculateSHA256(asarTempPath);
-      if (fileHash.toLowerCase() !== asarInfo.sha256.toLowerCase()) {
-        fs.unlinkSync(asarTempPath);
-        throw new Error('ASAR 文件校验失败');
-      }
-    }
-
-    logger.info('自动更新', 'ASAR 文件下载完成，准备替换');
-
-    // 备份当前 app.asar
-    const resourcesPath = process.resourcesPath;
-    const currentAsarPath = path.join(resourcesPath, 'app.asar');
-    const backupAsarPath = path.join(resourcesPath, 'app.asar.backup');
-
-    if (fs.existsSync(currentAsarPath)) {
-      fs.copyFileSync(currentAsarPath, backupAsarPath);
-      logger.info('自动更新', '已备份当前 app.asar');
-    }
-
-    // 替换 app.asar
-    try {
-      fs.copyFileSync(asarTempPath, currentAsarPath);
-      fs.unlinkSync(asarTempPath);
-
-      logger.success('自动更新', 'ASAR 更新成功');
-      this.sendMessage('update-downloaded');
-      this.sendMessage('show-update-dialog', {
-        type: 'update-ready',
-        version: versionInfo.version,
-        updateType: 'asar',
-      });
-    } catch (error: unknown) {
-      // 恢复备份
-      if (fs.existsSync(backupAsarPath)) {
-        fs.copyFileSync(backupAsarPath, currentAsarPath);
-        logger.warning('自动更新', '更新失败，已恢复备份');
-      }
-      throw error instanceof Error ? error : new Error(String(error));
     }
   }
 }

@@ -5,19 +5,15 @@ import type { SettingsTranslation } from './types';
 
 interface SettingsGeneralTabProps {
   t: SettingsTranslation;
-  onInstallService: () => void;
   onPauseService: () => void;
   onRestartService: () => void;
-  onUninstallService: () => void;
   onViewServiceLog: () => void;
 }
 
 const SettingsGeneralTab: React.FC<SettingsGeneralTabProps> = ({
   t,
-  onInstallService,
   onPauseService,
   onRestartService,
-  onUninstallService,
   onViewServiceLog,
 }) => (
   <>
@@ -36,10 +32,6 @@ const SettingsGeneralTab: React.FC<SettingsGeneralTabProps> = ({
       </Form.Item>
 
       <Space>
-        <Button onClick={onInstallService}>{t('settings.installService')}</Button>
-        <Button danger onClick={onUninstallService}>
-          {t('settings.uninstallService')}
-        </Button>
         <Button onClick={onViewServiceLog}>{t('settings.viewServiceLog')}</Button>
       </Space>
     </Card>

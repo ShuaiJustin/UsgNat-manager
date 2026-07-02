@@ -10,7 +10,6 @@ interface SettingsDataTabProps {
   onClearData: () => void;
   onExportConfig: () => void;
   onImportConfig: () => void;
-  onRestoreData: () => void;
 }
 
 const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
@@ -20,7 +19,6 @@ const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
   onClearData,
   onExportConfig,
   onImportConfig,
-  onRestoreData,
 }) => (
   <Card title={t('settings.dataManagement')}>
     <p>
@@ -32,7 +30,6 @@ const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
 
     <Space style={{ marginTop: 15 }}>
       <Button onClick={onBackupData}>{t('settings.backupData')}</Button>
-      <Button onClick={onRestoreData}>{t('settings.restoreData')}</Button>
       <Button danger onClick={onClearData}>
         {t('settings.clearData')}
       </Button>

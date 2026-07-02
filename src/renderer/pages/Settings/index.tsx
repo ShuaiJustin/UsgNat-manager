@@ -140,13 +140,12 @@ const Settings: React.FC = () => {
       onOk: async () => {
         try {
           const api = window.electronAPI;
-          if (api) {
-            ensureIpcSuccess(await stopMonitoringService(api), '暂停服务失败');
-            message.success('服务已暂停');
-            return;
+          if (!api) {
+            throw new Error('监控服务接口不可用');
           }
 
-          message.info('服务暂停功能演示');
+          ensureIpcSuccess(await stopMonitoringService(api), '暂停服务失败');
+          message.success('服务已暂停');
         } catch (error) {
           message.error(getErrorMessage(error, '暂停服务失败'));
         }
@@ -161,33 +160,17 @@ const Settings: React.FC = () => {
       onOk: async () => {
         try {
           const api = window.electronAPI;
-          if (api) {
-            ensureIpcSuccess(await stopMonitoringService(api), '停止服务失败');
-            await new Promise((resolve) => setTimeout(resolve, 1000));
-            ensureIpcSuccess(await startMonitoringService(api), '启动服务失败');
-            message.success('服务已重启');
-            return;
+          if (!api) {
+            throw new Error('监控服务接口不可用');
           }
 
-          message.info('服务重启功能演示');
+          ensureIpcSuccess(await stopMonitoringService(api), '停止服务失败');
+          await new Promise((resolve) => setTimeout(resolve, 1000));
+          ensureIpcSuccess(await startMonitoringService(api), '启动服务失败');
+          message.success('服务已重启');
         } catch (error) {
           message.error(getErrorMessage(error, '重启服务失败'));
         }
-      },
-    });
-  };
-
-  const handleInstallService = () => {
-    message.info('Windows 服务安装需要管理员权限，当前版本暂不支持。建议使用开机自启动功能。');
-  };
-
-  const handleUninstallService = () => {
-    modal.confirm({
-      title: '卸载服务',
-      content: '确定要卸载 Windows 服务吗？这将移除服务但保留所有数据。',
-      okType: 'danger',
-      onOk: () => {
-        message.info('Windows 服务卸载需要管理员权限，当前版本暂不支持。');
       },
     });
   };
@@ -209,8 +192,7 @@ const Settings: React.FC = () => {
     try {
       const api = window.electronAPI;
       if (!api?.log?.export) {
-        message.info('审计日志导出功能演示');
-        return;
+        throw new Error('日志导出接口不可用');
       }
 
       message.loading({ content: '正在导出审计日志...', key: 'exportLog' });
@@ -237,8 +219,7 @@ const Settings: React.FC = () => {
         try {
           const api = window.electronAPI;
           if (!api?.device?.getAll || !api?.credential?.delete) {
-            message.info('清除凭据功能演示');
-            return;
+            throw new Error('凭据清除接口不可用');
           }
 
           const devices = await api.device.getAll();
@@ -255,8 +236,7 @@ const Settings: React.FC = () => {
     try {
       const api = window.electronAPI;
       if (!api?.backup?.create) {
-        message.info('数据备份功能演示');
-        return;
+        throw new Error('备份接口不可用');
       }
 
       message.loading({ content: '正在备份数据...', key: 'backup' });
@@ -268,16 +248,6 @@ const Settings: React.FC = () => {
     } catch (error) {
       message.error(getErrorMessage(error, '数据备份失败'));
     }
-  };
-
-  const handleRestoreData = () => {
-    modal.info({
-      title: '恢复数据',
-      content: '请从备份列表中选择要恢复的备份文件。建议先创建当前数据的备份。',
-      onOk: () => {
-        message.info('数据恢复功能演示');
-      },
-    });
   };
 
   const handleClearData = () => {
@@ -369,8 +339,7 @@ const Settings: React.FC = () => {
     try {
       const api = window.electronAPI;
       if (!api?.config?.export) {
-        message.info('配置导出功能演示');
-        return;
+        throw new Error('配置导出接口不可用');
       }
 
       message.loading({ content: '正在导出配置...', key: 'exportConfig' });
@@ -591,10 +560,8 @@ const Settings: React.FC = () => {
       children: (
         <SettingsGeneralTab
           t={t}
-          onInstallService={handleInstallService}
           onPauseService={handlePauseService}
           onRestartService={handleRestartService}
-          onUninstallService={handleUninstallService}
           onViewServiceLog={handleViewServiceLog}
         />
       ),
@@ -622,7 +589,6 @@ const Settings: React.FC = () => {
           onClearData={handleClearData}
           onExportConfig={handleExportConfig}
           onImportConfig={handleImportConfig}
-          onRestoreData={handleRestoreData}
         />
       ),
     },
