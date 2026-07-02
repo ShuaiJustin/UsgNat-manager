@@ -64,6 +64,7 @@ resources/icons/*
 .agents/
 .codex/
 .codex-plugin/
+docs/
 AGENTS.md
 PONYTAIL-LICENSE
 ponytail-after-install.md

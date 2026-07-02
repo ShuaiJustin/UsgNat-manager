@@ -52,7 +52,6 @@ src/renderer/    React 页面、组件、状态和工具函数
 prisma/          Prisma schema 与 SQLite 数据模型
 resources/       应用图标和构建资源
 scripts/         构建、发布、测试脚本
-docs/            发布、设置和历史文档
 ```
 
 ## 打包输出
@@ -63,13 +62,6 @@ Windows 打包产物输出到 `release/`：
 - `USG-NAT-Manager-Portable-<version>.exe`
 
 macOS 打包需在 macOS 环境执行 `npm run package:mac`。
-
-## 相关文档
-
-- [GitHub 设置指南](docs/guides/setup/github-setup.md)
-- [版本更新说明](docs/guides/release/version-update.md)
-- [版本优化说明](docs/guides/release/version-optimization.md)
-- [图标资源说明](docs/icons.md)
 
 ## 许可证
 
