@@ -18,3 +18,8 @@ test('calculates a cutoff date for retention-based cleanup', () => {
   assert.equal(plan.persistAuditToDatabase, true);
   assert.equal(plan.cutoffDate?.toISOString(), '2026-03-04T12:00:00.000Z');
 });
+
+test('negative, invalid or under-7-day retention is rejected', () => {
+  for (const value of [-1, NaN, Infinity, 1.5, 1, 6])
+    assert.throws(() => createLogCleanupPlan(new Date(), value), /无效/);
+});

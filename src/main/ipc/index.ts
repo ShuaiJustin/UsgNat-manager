@@ -6,13 +6,13 @@ import { registerMonitorHandlers } from './handlers/monitor-handlers';
 import { registerRuleHandlers } from './handlers/rule-handlers';
 import { registerSystemHandlers } from './handlers/system-handlers';
 
-export function registerIpcHandlers() {
+export function registerIpcHandlers(options?: Parameters<typeof registerConfigHandlers>[0]) {
   const manualConfirmationManager = new ManualConfirmationManager();
 
   registerDeviceHandlers();
   registerRuleHandlers();
   registerMonitorHandlers();
   registerAutomationHandlers(manualConfirmationManager);
-  registerConfigHandlers();
-  registerSystemHandlers();
+  registerConfigHandlers(options);
+  registerSystemHandlers(options);
 }

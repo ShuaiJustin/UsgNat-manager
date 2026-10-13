@@ -13,6 +13,10 @@ type SavedAutomationConfig = {
   delayMinutes?: number;
   scheduledTime?: string | null;
   selectedDevices?: string[];
+  clientEgressConfirmed?: boolean;
+  managedRuleIds?: string[];
+  windowsNotifyEnabled?: boolean;
+  notifyTypes?: string[];
   checkInterval?: number;
   confirmCount?: number;
   checkSources?: string[];
@@ -50,6 +54,10 @@ export const buildAutomationMonitorStartConfig = (savedConfig?: SavedAutomationC
   delayMinutes: savedConfig?.delayMinutes ?? 5,
   scheduledTime: savedConfig?.scheduledTime ?? null,
   selectedDevices: savedConfig?.selectedDevices ?? [],
+  clientEgressConfirmed: savedConfig?.clientEgressConfirmed === true,
+  managedRuleIds: savedConfig?.managedRuleIds ?? [],
+  windowsNotifyEnabled: savedConfig?.windowsNotifyEnabled !== false,
+  notifyTypes: savedConfig?.notifyTypes ?? ['ipChange', 'updateSuccess', 'updateFailed'],
   checkInterval: savedConfig?.checkInterval ?? 5,
   confirmCount: savedConfig?.confirmCount ?? 3,
   checkSources: normalizeAutomationCheckSources(savedConfig?.checkSources),

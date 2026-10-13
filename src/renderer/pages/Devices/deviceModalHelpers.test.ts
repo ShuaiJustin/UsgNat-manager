@@ -8,6 +8,24 @@ import {
   shouldSaveCredential,
 } from './deviceModalHelpers.ts';
 
+test('private key passphrase survives save and preserves existing value unless explicitly cleared', () => {
+  const stored = {
+    authType: 'PrivateKey',
+    username: 'admin',
+    privateKey: 'key',
+    passphrase: 'old-secret',
+  };
+  assert.equal(
+    buildCredentialPayload({ authType: 'PrivateKey', passphrase: 'new-secret' }, stored).passphrase,
+    'new-secret'
+  );
+  assert.equal(buildCredentialPayload({ authType: 'PrivateKey' }, stored).passphrase, 'old-secret');
+  assert.equal(
+    buildCredentialPayload({ authType: 'PrivateKey', passphrase: '' }, stored).passphrase,
+    ''
+  );
+});
+
 test('rejects unsupported connection types before submission', () => {
   assert.equal(getDeviceAccessValidationError('HTTPS', 'Password'), 'unsupported-connection');
   assert.equal(getDeviceAccessValidationError('SSH', 'Password'), null);

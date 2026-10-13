@@ -12,3 +12,8 @@ test('windows thumbnail cache files are excluded from packaged artifacts', () =>
     'package build.files must exclude Thumbs.db files'
   );
 });
+
+test('postinstall prepares the local Electron distribution required by packaging', () => {
+  assert.equal(packageJson.build.electronDist, 'node_modules/electron/dist');
+  assert.match(packageJson.scripts.postinstall, /(?:^|&&\s*)install-electron(?:\s|$)/);
+});

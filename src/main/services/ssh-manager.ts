@@ -2,6 +2,7 @@ import { Client, ConnectConfig } from 'ssh2';
 import { EventEmitter } from 'events';
 import { Buffer } from 'buffer';
 import { logger } from './logger';
+import { prisma } from './prisma-client';
 import {
   getBatchShellOpenRecoveryAction,
   getBatchShellStartupAction,
@@ -11,6 +12,15 @@ import {
   hasBatchCommandResponse,
   isBenignSshDisconnectError,
   isCliPromptReady,
+  isDevicePromptReady,
+  isConfirmationPromptPending,
+  isHrpStandbyPrompt,
+  isPagerPromptPending,
+  stripPagerArtifacts,
+  createHostKeyVerifier,
+  getSingleCommandCloseResult,
+  isValidFirstHostKeyTrust,
+  isBatchCloseComplete,
 } from './ssh-manager-helpers';
 
 const BATCH_PROMPT_NUDGE_DELAY_MS = 300;
@@ -41,6 +51,7 @@ export interface SSHConnectionResult {
   message: string;
   latency?: number;
   error?: Error;
+  hostKey?: { fingerprint: string; host: string; port: number; changed: boolean };
 }
 
 /**
@@ -51,6 +62,7 @@ export interface SSHCommandResult {
   output: string;
   error?: string;
   exitCode?: number;
+  complete?: boolean;
 }
 
 /**
@@ -62,6 +74,77 @@ export class SSHManager extends EventEmitter {
   private connectionStatus: Map<string, boolean> = new Map();
   private connectionConfigs: Map<string, SSHConfig> = new Map();
   private disconnectingDevices: Set<string> = new Set();
+  private deviceOperations = new Set<string>();
+  isDeviceBusy(deviceId: string): boolean {
+    return this.deviceOperations.has(deviceId);
+  }
+  async withDeviceOperation<T>(deviceId: string, action: () => Promise<T>): Promise<T> {
+    if (this.deviceOperations.has(deviceId)) throw new Error('设备任务正在进行，请等待完成后重试');
+    this.deviceOperations.add(deviceId);
+    try {
+      return await action();
+    } finally {
+      this.deviceOperations.delete(deviceId);
+    }
+  }
+  private pendingHostKeys = new Map<
+    string,
+    { fingerprint: string; host: string; port: number; changed: boolean; expiresAt: number }
+  >();
+
+  private async getTrustedHostKey(
+    deviceId: string,
+    config: SSHConfig
+  ): Promise<string | undefined> {
+    const stored = await prisma.config.findUnique({ where: { key: `ssh-host:${deviceId}` } });
+    if (!stored) return undefined;
+    const trust = JSON.parse(stored.value) as { host: string; port: number; fingerprint: string };
+    if (trust.host !== config.host || trust.port !== config.port) {
+      throw new Error('SSH目标地址已变化，请重新保存设备并核对主机指纹');
+    }
+    return trust.fingerprint;
+  }
+
+  async trustHostKey(deviceId: string, fingerprint: string): Promise<SSHConnectionResult> {
+    const challenge = this.pendingHostKeys.get(deviceId);
+    const device = await prisma.device.findUnique({ where: { id: deviceId } });
+    if (!isValidFirstHostKeyTrust(challenge, device, fingerprint) || !device) {
+      return {
+        success: false,
+        message: '主机指纹确认已过期、目标变化或指纹不匹配，请重新测试连接',
+      };
+    }
+    // A changed key can never be approved through the first-trust workflow.
+    const existing = await prisma.config.findUnique({ where: { key: `ssh-host:${deviceId}` } });
+    if (existing)
+      return { success: false, message: '设备已有主机信任，禁止覆盖；请管理员调查主机指纹变化' };
+    await prisma.config.create({
+      data: {
+        key: `ssh-host:${deviceId}`,
+        value: JSON.stringify({ host: device.host, port: device.port, fingerprint }),
+      },
+    });
+    this.pendingHostKeys.delete(deviceId);
+    return { success: true, message: '已保存管理员确认的主机指纹，请重新测试连接' };
+  }
+
+  private observeHostKey(
+    deviceId: string | undefined,
+    config: SSHConfig,
+    trustedFingerprint: string | undefined,
+    fingerprint: string
+  ) {
+    const hostKey = {
+      fingerprint,
+      host: config.host,
+      port: config.port,
+      changed: Boolean(trustedFingerprint && trustedFingerprint !== fingerprint),
+    };
+    if (deviceId && trustedFingerprint !== fingerprint) {
+      this.pendingHostKeys.set(deviceId, { ...hostKey, expiresAt: Date.now() + 5 * 60 * 1000 });
+    }
+    return hostKey;
+  }
 
   constructor() {
     super();
@@ -77,12 +160,17 @@ export class SSHManager extends EventEmitter {
   /**
    * 测试SSH连接
    */
-  async testConnection(config: SSHConfig): Promise<SSHConnectionResult> {
+  async testConnection(config: SSHConfig, deviceId?: string): Promise<SSHConnectionResult> {
     const startTime = Date.now();
+    const trustedFingerprint = deviceId
+      ? await this.getTrustedHostKey(deviceId, config)
+      : undefined;
+    if (deviceId) this.pendingHostKeys.delete(deviceId);
 
     return new Promise((resolve) => {
       const client = new Client();
       let connected = false;
+      let hostKey: SSHConnectionResult['hostKey'];
 
       // 设置超时
       const timeout = setTimeout(() => {
@@ -114,9 +202,15 @@ export class SSHManager extends EventEmitter {
             success: false,
             message: `连接失败: ${err.message}`,
             error: err,
+            hostKey,
           });
         })
-        .connect(this.buildConnectConfig(config));
+        .connect(
+          this.buildConnectConfig(config, trustedFingerprint, (fingerprint) => {
+            const observed = this.observeHostKey(deviceId, config, trustedFingerprint, fingerprint);
+            hostKey = trustedFingerprint !== fingerprint ? observed : undefined;
+          })
+        );
     });
   }
 
@@ -124,6 +218,8 @@ export class SSHManager extends EventEmitter {
    * 创建并保持SSH连接
    */
   async connect(deviceId: string, config: SSHConfig): Promise<SSHConnectionResult> {
+    const trustedFingerprint = await this.getTrustedHostKey(deviceId, config);
+    this.pendingHostKeys.delete(deviceId);
     // 如果已存在连接，先断开
     if (this.connections.has(deviceId)) {
       await this.disconnect(deviceId);
@@ -133,6 +229,7 @@ export class SSHManager extends EventEmitter {
       const client = new Client();
       const startTime = Date.now();
       let connected = false;
+      let hostKey: SSHConnectionResult['hostKey'];
 
       const timeout = setTimeout(() => {
         if (!connected) {
@@ -172,6 +269,7 @@ export class SSHManager extends EventEmitter {
               success: false,
               message: `连接失败: ${err.message}`,
               error: err,
+              hostKey,
             });
           }
           // 无论如何都发出error事件，用于日志记录
@@ -192,7 +290,12 @@ export class SSHManager extends EventEmitter {
             this.emit('disconnected', deviceId);
           }
         })
-        .connect(this.buildConnectConfig(config));
+        .connect(
+          this.buildConnectConfig(config, trustedFingerprint, (fingerprint) => {
+            const observed = this.observeHostKey(deviceId, config, trustedFingerprint, fingerprint);
+            hostKey = trustedFingerprint !== fingerprint ? observed : undefined;
+          })
+        );
     });
   }
 
@@ -309,15 +412,13 @@ export class SSHManager extends EventEmitter {
         activeStream = stream;
         let waitForPrompt = true;
         let commandSent = false;
+        let completed = false;
 
         stream
           .on('close', () => {
-            const commandError = getDeviceCommandError(output);
             resolvePendingResult({
-              success: commandError === null,
+              ...getSingleCommandCloseResult(commandSent && completed, output),
               output: this.cleanOutput(output),
-              error: commandError || undefined,
-              exitCode: commandError === null ? 0 : 1,
             });
           })
           .on('error', (err: Error) => {
@@ -334,7 +435,7 @@ export class SSHManager extends EventEmitter {
             output += text;
 
             // 检测到命令提示符后，发送命令
-            if (waitForPrompt && this.isPromptReady(text)) {
+            if (waitForPrompt && isDevicePromptReady(output)) {
               waitForPrompt = false;
               output = '';
               stream.write(command + '\n');
@@ -342,13 +443,27 @@ export class SSHManager extends EventEmitter {
               return;
             }
 
-            if (commandSent && this.isPromptReady(output)) {
+            if (commandSent && isPagerPromptPending(output)) {
+              output = stripPagerArtifacts(output);
+              stream.write(' ');
+              return;
+            }
+            if (commandSent) output = stripPagerArtifacts(output);
+
+            // A redrawn prompt can arrive before the echo; only the echoed command starts a read.
+            if (
+              commandSent &&
+              isDevicePromptReady(output) &&
+              output.includes(command.slice(0, 20))
+            ) {
+              completed = true;
               const commandError = getDeviceCommandError(output);
               finish({
                 success: commandError === null,
                 output: this.cleanOutput(output),
                 error: commandError || undefined,
                 exitCode: commandError === null ? 0 : 1,
+                complete: true,
               });
             }
           })
@@ -392,7 +507,7 @@ export class SSHManager extends EventEmitter {
         /^[<[].*[>\]]#?\s*$/.test(line) ||
         line.startsWith('display current-configuration') ||
         line === 'quit' ||
-        line.includes('return') ||
+        line === 'return' ||
         /^[>#$]/.test(line)
       ) {
         continue;
@@ -599,7 +714,9 @@ export class SSHManager extends EventEmitter {
                 commandExecuted = true;
                 const commandError = getDeviceCommandError(output);
                 resolve({
-                  success: currentCommandIndex === commands.length && commandError === null,
+                  success:
+                    isBatchCloseComplete(currentCommandIndex, commands.length, activeCommand) &&
+                    commandError === null,
                   output: this.cleanOutput(output),
                   error: commandError
                     ? formatBatchCommandError({
@@ -609,7 +726,11 @@ export class SSHManager extends EventEmitter {
                         command: activeCommand,
                       })
                     : undefined,
-                  exitCode: commandError === null ? 0 : 1,
+                  exitCode:
+                    commandError === null &&
+                    isBatchCloseComplete(currentCommandIndex, commands.length, activeCommand)
+                      ? 0
+                      : 1,
                 });
               }
             })
@@ -633,7 +754,19 @@ export class SSHManager extends EventEmitter {
               lastDataTime = Date.now();
 
               // 首次等待提示符出现
-              if (waitForPrompt && this.isPromptReady(text)) {
+              if (waitForPrompt && this.isPromptReady(output)) {
+                if (isHrpStandbyPrompt(output)) {
+                  clearBatchTimers();
+                  commandExecuted = true;
+                  stream.end();
+                  resolve({
+                    success: false,
+                    output: this.cleanOutput(output),
+                    error: '设备是双机热备的备机（HRP_S），禁止直接修改配置，请连接主机',
+                    exitCode: 1,
+                  });
+                  return;
+                }
                 waitForPrompt = false;
                 output = '';
 
@@ -643,20 +776,44 @@ export class SSHManager extends EventEmitter {
                 }
               }
               // 后续命令：检测到提示符就发送下一条
-              else if (!waitForPrompt && this.isPromptReady(text)) {
+              else if (!waitForPrompt && this.isPromptReady(output)) {
                 if (activeCommand && !hasBatchCommandResponse(activeCommandOutput, activeCommand)) {
                   return;
                 }
 
                 const activeCommandError = getDeviceCommandError(activeCommandOutput);
-                if (activeCommandError) {
+                // Re-checked at every prompt: the startup fallback can send before the first prompt
+                // was recognized, so the first-prompt check alone is not enough.
+                if (isHrpStandbyPrompt(output)) {
                   clearBatchTimers();
                   commandExecuted = true;
+                  stream.end();
                   resolve({
                     success: false,
                     output: this.cleanOutput(output),
                     error: formatBatchCommandError({
-                      error: activeCommandError,
+                      error: '设备是双机热备的备机（HRP_S），禁止直接修改配置，请连接主机',
+                      commandNumber: activeCommandNumber,
+                      commandCount: commands.length,
+                      command: activeCommand,
+                    }),
+                    exitCode: 1,
+                  });
+                  return;
+                }
+                const nextCommand = commands[currentCommandIndex] ?? '';
+                const unexpectedConfirmation =
+                  isConfirmationPromptPending(activeCommandOutput) && !/^[yn]$/i.test(nextCommand);
+                if (unexpectedConfirmation) stream.write('n\n');
+                if (activeCommandError || unexpectedConfirmation) {
+                  clearBatchTimers();
+                  commandExecuted = true;
+                  stream.end();
+                  resolve({
+                    success: false,
+                    output: this.cleanOutput(output),
+                    error: formatBatchCommandError({
+                      error: activeCommandError || '设备出现意外的确认提示，已回答 N 并中止',
                       commandNumber: activeCommandNumber,
                       commandCount: commands.length,
                       command: activeCommand,
@@ -841,7 +998,11 @@ export class SSHManager extends EventEmitter {
   /**
    * 构建SSH连接配置
    */
-  private buildConnectConfig(config: SSHConfig): ConnectConfig {
+  private buildConnectConfig(
+    config: SSHConfig,
+    trustedFingerprint?: string,
+    onObserved?: (fingerprint: string) => void
+  ): ConnectConfig {
     const connectConfig: ConnectConfig = {
       host: config.host,
       port: config.port,
@@ -849,6 +1010,7 @@ export class SSHManager extends EventEmitter {
       readyTimeout: config.timeout || 15000,
       keepaliveInterval: 10000,
       keepaliveCountMax: 3,
+      hostVerifier: createHostKeyVerifier(trustedFingerprint, onObserved),
       // 添加更广泛的算法支持以兼容不同版本的SSH服务器
       algorithms: {
         kex: [

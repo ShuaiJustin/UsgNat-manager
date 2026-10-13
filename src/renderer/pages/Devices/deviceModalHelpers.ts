@@ -6,6 +6,7 @@ type StoredCredential = {
   username?: string;
   password?: string;
   privateKey?: string;
+  passphrase?: string;
 } | null;
 
 type DeviceFormValues = {
@@ -15,6 +16,7 @@ type DeviceFormValues = {
   password?: string;
   privateKeyPath?: string;
   authType?: SupportedAuthType;
+  passphrase?: string;
 };
 
 export type CredentialPayload = {
@@ -23,6 +25,7 @@ export type CredentialPayload = {
   password?: string;
   privateKeyPath?: string;
   privateKey?: string;
+  passphrase?: string;
 };
 
 export const getDeviceAccessValidationError = (
@@ -51,6 +54,12 @@ export const buildCredentialPayload = (
       selectedAuthType === 'Password' ? values.password || storedCredential?.password : undefined,
     privateKeyPath: values.privateKeyPath || undefined,
     privateKey: values.privateKeyPath ? undefined : storedCredential?.privateKey,
+    ...(selectedAuthType === 'PrivateKey'
+      ? {
+          passphrase:
+            values.passphrase ?? (values.privateKeyPath ? undefined : storedCredential?.passphrase),
+        }
+      : {}),
   };
 };
 

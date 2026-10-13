@@ -1,8 +1,9 @@
 import React, { useEffect, useState } from 'react';
 import { App, Alert, Button, Divider, Form, Input, Space, Tabs } from 'antd';
 import type { TabsProps } from 'antd';
-import { CheckCircleOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
+import { useQuery } from '@tanstack/react-query';
+import { version as appVersion } from '../../../../package.json';
 
 import { useAppStore } from '@/stores/app.store';
 import { ensureIpcSuccess } from '@/utils/ipcResult';
@@ -37,6 +38,25 @@ const Settings: React.FC = () => {
   const [resetValues, setResetValues] = useState<SettingsFormValues>(DEFAULT_SETTINGS_FORM_VALUES);
   const [databaseInfo, setDatabaseInfo] = useState<SettingsDatabaseInfo>(DEFAULT_DATABASE_INFO);
   const { setScale, setLanguage } = useAppStore();
+  const {
+    data: monitorStatus,
+    isError: monitorStatusError,
+    refetch: refetchMonitorStatus,
+  } = useQuery({
+    queryKey: ['settings-monitor-status'],
+    queryFn: async () => {
+      const api = window.electronAPI;
+      if (!api?.monitor?.getStatus) throw new Error('监控状态接口不可用');
+      return api.monitor.getStatus();
+    },
+    enabled: typeof window.electronAPI?.monitor?.getStatus === 'function',
+    refetchInterval: 5000,
+    retry: 1,
+  });
+  const monitorRunning =
+    !monitorStatusError && typeof monitorStatus?.isRunning === 'boolean'
+      ? monitorStatus.isRunning
+      : undefined;
 
   useEffect(() => {
     const loadData = async () => {
@@ -145,6 +165,7 @@ const Settings: React.FC = () => {
           }
 
           ensureIpcSuccess(await stopMonitoringService(api), '暂停服务失败');
+          await refetchMonitorStatus();
           message.success('服务已暂停');
         } catch (error) {
           message.error(getErrorMessage(error, '暂停服务失败'));
@@ -167,6 +188,7 @@ const Settings: React.FC = () => {
           ensureIpcSuccess(await stopMonitoringService(api), '停止服务失败');
           await new Promise((resolve) => setTimeout(resolve, 1000));
           ensureIpcSuccess(await startMonitoringService(api), '启动服务失败');
+          await refetchMonitorStatus();
           message.success('服务已重启');
         } catch (error) {
           message.error(getErrorMessage(error, '重启服务失败'));
@@ -183,8 +205,7 @@ const Settings: React.FC = () => {
   const handleManagePassword = () => {
     modal.info({
       title: '主密码管理',
-      content:
-        '主密码功能用于保护所有存储的凭据。当前版本使用 Windows 凭据管理器，暂时不需要额外主密码。',
+      content: '启动主密码尚未实现。凭据优先使用系统账户加密，系统保护不可用时使用本地密钥。',
     });
   };
 
@@ -223,7 +244,8 @@ const Settings: React.FC = () => {
           }
 
           const devices = await api.device.getAll();
-          await Promise.all(devices.map((device) => api.credential.delete(device.id)));
+          for (const device of devices)
+            ensureIpcSuccess(await api.credential.delete(device.id), '清除凭据失败');
           message.success('所有凭据已清除');
         } catch (error) {
           message.error(getErrorMessage(error, '清除凭据失败'));
@@ -308,10 +330,6 @@ const Settings: React.FC = () => {
           }
 
           message.loading({ content: '正在创建备份...', key: 'clearData' });
-          if (api?.backup?.create) {
-            await api.backup.create('清空数据前自动备份');
-          }
-
           message.loading({ content: '正在清空数据...', key: 'clearData' });
           ensureIpcSuccess(await api.database.clearAll(), '清空数据失败');
 
@@ -333,6 +351,38 @@ const Settings: React.FC = () => {
         }
       },
     });
+  };
+
+  const handleRestoreData = async () => {
+    const api = window.electronAPI;
+    try {
+      if (!api?.system?.selectFile || !api?.backup?.restore) throw new Error('恢复接口不可用');
+      const filePath = await api.system.selectFile({
+        title: '选择备份文件',
+        filters: [{ name: 'JSON 备份', extensions: ['json'] }],
+      });
+      if (!filePath) return;
+      modal.confirm({
+        title: '恢复备份',
+        okText: '确认恢复',
+        cancelText: '取消',
+        okType: 'danger',
+        content:
+          '将替换所有设备、规则、凭据、配置和日志，先自动备份当前状态。运行中的自动化会停止。文件或凭据校验失败时保留原数据；跨机凭据需原系统账户或匹配密钥。恢复完成后请核对受管范围再启动自动化。',
+        onOk: async () => {
+          try {
+            ensureIpcSuccess(await api.backup.restore(filePath), '恢复备份失败');
+            message.success('备份恢复成功，请核对设备、规则与自动化设置');
+            window.location.reload();
+          } catch (error) {
+            message.error(getErrorMessage(error, '恢复备份失败'));
+            throw error;
+          }
+        },
+      });
+    } catch (error) {
+      message.error(getErrorMessage(error, '恢复备份失败'));
+    }
   };
 
   const handleExportConfig = async () => {
@@ -364,7 +414,8 @@ const Settings: React.FC = () => {
   const handleImportConfig = () => {
     modal.confirm({
       title: '导入配置',
-      content: '请选择之前导出的配置文件（.json 格式）。导入将覆盖当前配置，是否继续？',
+      content:
+        '请选择之前导出的配置文件（.json 格式）。导入将覆盖当前配置，保留本机已有邮件密码，导入后会关闭自动更新，请核对受管设备和规则后重新开启。',
       okText: '选择文件',
       cancelText: '取消',
       onOk: async () => {
@@ -421,7 +472,7 @@ const Settings: React.FC = () => {
       content: (
         <div>
           <h3>华为 USG 防火墙 NAT 管理软件</h3>
-          <p>版本: V1.1.6</p>
+          <p>版本: V{appVersion}</p>
           <Divider />
           <h4>MIT License</h4>
           <p style={{ fontSize: 12, color: '#666' }}>
@@ -444,16 +495,11 @@ const Settings: React.FC = () => {
       message.loading({ content: '正在检查更新...', key: 'update', duration: 0 });
 
       if (!api?.updater?.checkForUpdates) {
-        setTimeout(() => {
-          message.success({
-            content: '当前已是最新版本 V1.1.6',
-            key: 'update',
-          });
-        }, 1500);
+        message.error({ content: '更新接口不可用', key: 'update' });
         return;
       }
 
-      const result = await api.updater.checkForUpdates(true);
+      const result = await api.updater.checkForUpdates(false);
 
       if (!result.success) {
         message.error({
@@ -470,63 +516,7 @@ const Settings: React.FC = () => {
           content: result.message || '当前已是最新版本',
           key: 'update',
         });
-        return;
       }
-
-      modal.confirm({
-        title: '发现新版本',
-        icon: <CheckCircleOutlined style={{ color: '#52c41a' }} />,
-        content: (
-          <div>
-            <p>
-              <strong>当前版本：</strong> V{result.currentVersion || '1.1.6'}
-            </p>
-            <p>
-              <strong>最新版本：</strong> V{result.latestVersion || '-'}
-            </p>
-            <p style={{ marginTop: 16 }}>是否立即下载并安装新版本？</p>
-          </div>
-        ),
-        okText: '立即下载',
-        cancelText: '稍后提醒',
-        onOk: async () => {
-          try {
-            if (!api?.updater?.downloadUpdate) {
-              throw new Error('下载更新接口不可用');
-            }
-
-            message.loading({ content: '正在下载更新...', key: 'download', duration: 0 });
-            ensureIpcSuccess(await api.updater.downloadUpdate(), '下载更新失败');
-            message.destroy('download');
-
-            modal.success({
-              title: '下载完成',
-              content: '更新已下载完成，应用将在退出时自动安装。是否立即重启安装？',
-              okText: '立即重启',
-              cancelText: '稍后重启',
-              onOk: async () => {
-                try {
-                  if (!api?.updater?.quitAndInstall) {
-                    throw new Error('安装更新接口不可用');
-                  }
-
-                  ensureIpcSuccess(await api.updater.quitAndInstall(), '退出并安装更新失败');
-                } catch (error) {
-                  message.error({
-                    content: `安装失败: ${getErrorMessage(error, '未知错误')}`,
-                    duration: 5,
-                  });
-                }
-              },
-            });
-          } catch (error) {
-            message.error({
-              content: `下载失败: ${getErrorMessage(error, '未知错误')}`,
-              key: 'download',
-            });
-          }
-        },
-      });
     } catch (error) {
       message.error({
         content: `检查更新失败: ${getErrorMessage(error, '未知错误')}`,
@@ -560,6 +550,7 @@ const Settings: React.FC = () => {
       children: (
         <SettingsGeneralTab
           t={t}
+          monitorRunning={monitorRunning}
           onPauseService={handlePauseService}
           onRestartService={handleRestartService}
           onViewServiceLog={handleViewServiceLog}
@@ -586,6 +577,7 @@ const Settings: React.FC = () => {
           databaseInfo={databaseInfo}
           t={t}
           onBackupData={handleBackupData}
+          onRestoreData={() => void handleRestoreData()}
           onClearData={handleClearData}
           onExportConfig={handleExportConfig}
           onImportConfig={handleImportConfig}
@@ -620,7 +612,12 @@ const Settings: React.FC = () => {
           setFormValues(form.getFieldsValue(true));
         }}
       >
-        <SettingsOverviewStats databaseInfo={databaseInfo} formValues={formValues} t={t} />
+        <SettingsOverviewStats
+          databaseInfo={databaseInfo}
+          formValues={formValues}
+          t={t}
+          monitorRunning={monitorRunning}
+        />
 
         <Tabs
           defaultActiveKey="1"

@@ -21,6 +21,7 @@ type AutomationRulePayloadInput = {
   insidePort: string;
   enabled: boolean;
   noReverse?: boolean | null;
+  addSyntax?: ParsedNatRule['addSyntax'];
 };
 
 type AutomationRuleWithIdLike = AutomationRulePayloadInput & {
@@ -36,6 +37,66 @@ type BatchUpdateIPCommandBuilder = {
     newGlobalIp: string,
     deviceRules?: ParsedNatRule[]
   ) => string[];
+};
+
+export type ManualConfirmationOutcome = 'confirmed' | 'rejected' | 'timeout' | 'cancelled';
+
+export class ManualConfirmationRequestController {
+  private cancelPending: (() => void) | null = null;
+
+  /** Only an explicit "no" maps to 'rejected'; timeouts and cancellations stay distinguishable. */
+  request(
+    isCancelled: () => boolean,
+    emitRequest: (respond: (confirmed: boolean, reason?: 'timeout' | 'cancelled') => void) => void
+  ): Promise<ManualConfirmationOutcome> {
+    return new Promise((resolve) => {
+      let settled = false;
+      const settle = (confirmed: boolean, reason?: 'timeout' | 'cancelled') => {
+        if (settled) {
+          return;
+        }
+
+        settled = true;
+        if (this.cancelPending === cancel) {
+          this.cancelPending = null;
+        }
+        resolve(confirmed ? 'confirmed' : (reason ?? 'rejected'));
+      };
+      const cancel = () => settle(false, 'cancelled');
+
+      this.cancelPending = cancel;
+      if (isCancelled()) {
+        cancel();
+        return;
+      }
+
+      emitRequest(settle);
+    });
+  }
+
+  cancel(): void {
+    this.cancelPending?.();
+  }
+}
+
+// Notification-only and IP-detection settings never change what an in-flight batch writes.
+const NON_WRITE_CONFIG_KEYS = new Set([
+  'windowsNotifyEnabled',
+  'notifyTypes',
+  'checkInterval',
+  'confirmCount',
+  'checkSources',
+]);
+
+/** O(keys) comparison; values are small config scalars/arrays compared structurally. */
+export const hasWriteRelevantConfigChange = (previous: object, next: object): boolean => {
+  const before = new Map(Object.entries(previous));
+  const after = new Map(Object.entries(next));
+  return [...new Set([...before.keys(), ...after.keys()])].some(
+    (key) =>
+      !NON_WRITE_CONFIG_KEYS.has(key) &&
+      JSON.stringify(before.get(key)) !== JSON.stringify(after.get(key))
+  );
 };
 
 const IPV4_PATTERN = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/;
@@ -68,7 +129,9 @@ const normalizeNatProtocol = (protocol: string): ParsedNatRule['protocol'] => {
 
 const hasSameRuleIdentity = (left: ParsedNatRule, right: ParsedNatRule): boolean =>
   left.ruleName === right.ruleName ||
-  (left.protocol.toUpperCase() === right.protocol.toUpperCase() &&
+  (left.addSyntax === 'endpoint' &&
+    right.addSyntax === 'endpoint' &&
+    left.protocol.toUpperCase() === right.protocol.toUpperCase() &&
     left.globalPort === right.globalPort &&
     left.insideIp === right.insideIp &&
     left.insidePort === right.insidePort);
@@ -172,6 +235,7 @@ export const createRuleSnapshots = (
     insidePort: rule.insidePort,
     enabled: rule.enabled,
     noReverse: rule.noReverse || false,
+    ...(rule.addSyntax ? { addSyntax: rule.addSyntax } : {}),
   }));
 
 export const createNatRulePayloads = (
@@ -186,6 +250,7 @@ export const createNatRulePayloads = (
     insidePort: rule.insidePort,
     enabled: rule.enabled,
     noReverse: rule.noReverse || false,
+    ...(rule.addSyntax ? { addSyntax: rule.addSyntax } : {}),
   }));
 
 export const buildBatchUpdateIPCommands = (
@@ -208,11 +273,6 @@ export const buildBatchUpdateIPCommands = (
     deviceRules
   );
 };
-
-export const resolveScheduledUpdateIP = (
-  pendingIP: string | null | undefined,
-  currentIP: string | null | undefined
-): string | null => pendingIP || currentIP || null;
 
 export const shouldScheduleDailyUpdate = (config: {
   autoUpdateEnabled?: boolean | null;
@@ -302,7 +362,16 @@ export const getUpdatedRuleVerificationIssues = (
     const updatedRule = { ...expectedRule, globalIp: newIP };
     const matchedRule = deviceRules.find((rule) => hasSameRuleIdentity(rule, updatedRule));
 
-    if (!matchedRule || matchedRule.globalIp !== newIP) {
+    if (
+      !matchedRule ||
+      matchedRule.globalIp !== newIP ||
+      matchedRule.protocol.toUpperCase() !== updatedRule.protocol.toUpperCase() ||
+      matchedRule.globalPort !== updatedRule.globalPort ||
+      matchedRule.insideIp !== updatedRule.insideIp ||
+      matchedRule.insidePort !== updatedRule.insidePort ||
+      Boolean(matchedRule.noReverse) !== Boolean(updatedRule.noReverse) ||
+      !matchedRule.enabled
+    ) {
       issues.push(`规则 ${expectedRule.ruleName} 未在设备上生效`);
     }
   }
@@ -315,3 +384,35 @@ export const assertRuleVerificationSucceeded = (verified: boolean): void => {
     throw new Error('Rule verification failed after device update');
   }
 };
+
+export class AutomationRunController {
+  private generation = 0;
+  private activeTask: Promise<unknown> | null = null;
+
+  begin(): number {
+    return this.generation;
+  }
+
+  isCancelled(token: number): boolean {
+    return token !== this.generation;
+  }
+
+  track<T>(task: Promise<T>): Promise<T> {
+    const trackedTask = task.finally(() => {
+      if (this.activeTask === trackedTask) {
+        this.activeTask = null;
+      }
+    });
+    this.activeTask = trackedTask;
+    return trackedTask;
+  }
+
+  async cancelAndWait(cancelPending?: () => void): Promise<void> {
+    this.generation += 1;
+    cancelPending?.();
+    const activeTask = this.activeTask;
+    if (activeTask) {
+      await activeTask;
+    }
+  }
+}

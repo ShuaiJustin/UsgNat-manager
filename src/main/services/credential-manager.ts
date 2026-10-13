@@ -1,8 +1,6 @@
-import CryptoJS from 'crypto-js';
-import { app } from 'electron';
 import fs from 'fs/promises';
-import path from 'path';
 import { prisma } from './prisma-client';
+import { secretStorage } from './secret-protection';
 
 /**
  * 凭据类型
@@ -33,80 +31,18 @@ type MfaType = Credential['mfaType'];
  * 负责安全地存储和检索设备凭据
  */
 class CredentialManager {
-  private encryptionKey: string;
-  private keyFilePath: string;
-  private keyInitialized: boolean = false;
-
-  constructor() {
-    // 生成或加载加密密钥
-    this.keyFilePath = path.join(app.getPath('userData'), '.credential-key');
-    this.encryptionKey = '';
-    // 异步初始化，不阻塞构造函数
-    this.initializeEncryptionKey().catch((error) => {
-      console.error('凭据管理器初始化失败:', error);
-    });
-  }
-
-  /**
-   * 初始化加密密钥
-   */
-  private async initializeEncryptionKey(): Promise<void> {
-    try {
-      // 尝试读取现有密钥
-      const keyData = await fs.readFile(this.keyFilePath, 'utf-8');
-      this.encryptionKey = keyData.trim();
-      this.keyInitialized = true;
-    } catch {
-      // 如果密钥文件不存在，生成新密钥
-      this.encryptionKey = this.generateEncryptionKey();
-      await fs.writeFile(this.keyFilePath, this.encryptionKey, { mode: 0o600 });
-      this.keyInitialized = true;
-    }
-  }
-
-  /**
-   * 确保加密密钥已初始化
-   */
-  private async ensureKeyInitialized(): Promise<void> {
-    if (!this.keyInitialized) {
-      await this.initializeEncryptionKey();
-    }
-  }
-
-  /**
-   * 生成加密密钥
-   */
-  private generateEncryptionKey(): string {
-    return CryptoJS.lib.WordArray.random(32).toString();
-  }
-
-  /**
-   * 加密数据
-   */
-  private encrypt(data: string): string {
-    return CryptoJS.AES.encrypt(data, this.encryptionKey).toString();
-  }
-
-  /**
-   * 解密数据
-   */
-  private decrypt(encryptedData: string): string {
-    const bytes = CryptoJS.AES.decrypt(encryptedData, this.encryptionKey);
-    return bytes.toString(CryptoJS.enc.Utf8);
-  }
-
   /**
    * 保存凭据
    */
   async saveCredential(credential: Credential): Promise<void> {
-    // 确保加密密钥已初始化
-    await this.ensureKeyInitialized();
-
-    // 加密敏感信息
-    const encryptedPassword = credential.password ? this.encrypt(credential.password) : undefined;
-    // TODO: 如需支持 passphrase 和 MFA，可在此处加密
-    // const encryptedPassphrase = credential.passphrase ? this.encrypt(credential.passphrase) : undefined;
-    // const encryptedMfaSecret = credential.mfaSecret ? this.encrypt(credential.mfaSecret) : undefined;
+    const encryptedPassword =
+      'credential:v1:' +
+      (await secretStorage.protect(
+        JSON.stringify({
+          password: credential.password,
+          passphrase: credential.passphrase,
+        })
+      ));
 
     // 处理私钥
     let privateKeyContent: string | undefined;
@@ -115,6 +51,7 @@ class CredentialManager {
     } else if (credential.privateKey) {
       privateKeyContent = credential.privateKey;
     }
+    if (privateKeyContent) privateKeyContent = await secretStorage.protect(privateKeyContent);
 
     // 处理证书
     let certificateContent: string | undefined;
@@ -151,9 +88,6 @@ class CredentialManager {
    * 获取凭据
    */
   async getCredential(deviceId: string): Promise<Credential | null> {
-    // 确保加密密钥已初始化
-    await this.ensureKeyInitialized();
-
     const credentialRef = await prisma.credentialRef.findUnique({
       where: { deviceId },
     });
@@ -162,15 +96,56 @@ class CredentialManager {
       return null;
     }
 
-    // 解密敏感信息
-    const password = credentialRef.secretRef ? this.decrypt(credentialRef.secretRef) : undefined;
+    const secrets = credentialRef.secretRef?.startsWith('credential:v1:')
+      ? (JSON.parse(
+          await secretStorage.reveal(credentialRef.secretRef.slice('credential:v1:'.length))
+        ) as { password?: string; passphrase?: string })
+      : {
+          password: credentialRef.secretRef
+            ? await secretStorage.reveal(credentialRef.secretRef)
+            : undefined,
+        };
+    if (
+      !secrets ||
+      typeof secrets !== 'object' ||
+      Array.isArray(secrets) ||
+      (secrets.password !== undefined && typeof secrets.password !== 'string') ||
+      (secrets.passphrase !== undefined && typeof secrets.passphrase !== 'string')
+    ) {
+      throw new Error('凭据内容无效，请重新录入');
+    }
+    const privateKey = credentialRef.privateKey
+      ? secretStorage.isProtected(credentialRef.privateKey)
+        ? await secretStorage.reveal(credentialRef.privateKey)
+        : credentialRef.privateKey
+      : undefined;
+    // Migrate legacy plaintext keys on successful read without losing the authentication payload.
+    const migrateKey = privateKey && !secretStorage.isProtected(credentialRef.privateKey!);
+    const migrateSecret =
+      credentialRef.secretRef && !credentialRef.secretRef.startsWith('credential:v1:');
+    if (migrateKey || migrateSecret) {
+      await prisma.credentialRef.updateMany({
+        where: {
+          id: credentialRef.id,
+          privateKey: credentialRef.privateKey,
+          secretRef: credentialRef.secretRef,
+        },
+        data: {
+          privateKey: migrateKey ? await secretStorage.protect(privateKey) : undefined,
+          secretRef: migrateSecret
+            ? 'credential:v1:' + (await secretStorage.protect(JSON.stringify(secrets)))
+            : undefined,
+        },
+      });
+    }
 
     return {
       deviceId: credentialRef.deviceId,
       authType: credentialRef.authType as AuthType,
       username: credentialRef.username || undefined,
-      password,
-      privateKey: credentialRef.privateKey || undefined,
+      password: secrets.password,
+      passphrase: secrets.passphrase,
+      privateKey,
       certificate: credentialRef.certificate || undefined,
       mfaType: credentialRef.mfaType as MfaType,
     };
@@ -199,10 +174,15 @@ class CredentialManager {
    * 更新密码
    */
   async updatePassword(deviceId: string, newPassword: string): Promise<void> {
-    // 确保加密密钥已初始化
-    await this.ensureKeyInitialized();
-
-    const encryptedPassword = this.encrypt(newPassword);
+    const current = await this.getCredential(deviceId);
+    const encryptedPassword =
+      'credential:v1:' +
+      (await secretStorage.protect(
+        JSON.stringify({
+          password: newPassword,
+          passphrase: current?.passphrase,
+        })
+      ));
     await prisma.credentialRef.update({
       where: { deviceId },
       data: { secretRef: encryptedPassword },
@@ -216,7 +196,7 @@ class CredentialManager {
     const privateKeyContent = await fs.readFile(filePath, 'utf-8');
     await prisma.credentialRef.update({
       where: { deviceId },
-      data: { privateKey: privateKeyContent },
+      data: { privateKey: await secretStorage.protect(privateKeyContent) },
     });
   }
 

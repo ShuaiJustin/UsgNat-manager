@@ -10,5 +10,5 @@ export interface Log {
 export interface MonitorStatus {
   isRunning: boolean;
   currentIP: string;
-  lastCheck: Date;
+  lastCheck: Date | null;
 }

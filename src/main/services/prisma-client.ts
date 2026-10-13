@@ -1,4 +1,5 @@
 import { PrismaClient } from '@prisma/client';
+import { isDevMode } from '../runtime-mode';
 
 let prismaInstance: PrismaClient | null = null;
 
@@ -9,7 +10,7 @@ let prismaInstance: PrismaClient | null = null;
 export function getPrismaClient(): PrismaClient {
   if (!prismaInstance) {
     prismaInstance = new PrismaClient({
-      log: process.env.NODE_ENV === 'development' ? ['query', 'error', 'warn'] : ['error'],
+      log: isDevMode() ? ['query', 'error', 'warn'] : ['error'],
     });
   }
   return prismaInstance;

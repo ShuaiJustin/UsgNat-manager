@@ -18,6 +18,15 @@ type EmailConfig = Record<string, unknown>;
 type ConfigPayload = Record<string, unknown>;
 type FileDialogOptions = Record<string, unknown>;
 
+// 通用 on/off 只允许主进程实际推送且渲染进程订阅的通道。
+const RENDERER_EVENT_CHANNELS = new Set(['monitor:start', 'monitor:stop', 'updater-message']);
+
+const assertRendererEventChannel = (channel: string) => {
+  if (!RENDERER_EVENT_CHANNELS.has(channel)) {
+    throw new Error(`不允许订阅的事件通道: ${channel}`);
+  }
+};
+
 const listenerMap = new Map<string, WeakMap<object, WrappedRendererListener>>();
 
 const addMappedListener = (channel: string, callback: RendererListener) => {
@@ -51,6 +60,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     testConnection: (id: string) => ipcRenderer.invoke('device:testConnection', id),
     testDirectConnection: (config: DevicePayload) =>
       ipcRenderer.invoke('device:testDirectConnection', config),
+    trustHostKey: (id: string, fingerprint: string) =>
+      ipcRenderer.invoke('device:trustHostKey', id, fingerprint),
   },
 
   // 规则管理
@@ -58,9 +69,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
     getAll: (deviceId: string) => ipcRenderer.invoke('rule:getAll', deviceId),
     getTotalCount: () => ipcRenderer.invoke('rule:getTotalCount'),
     syncFromDevice: (deviceId: string) => ipcRenderer.invoke('rule:syncFromDevice', deviceId),
-    syncToDevice: (deviceId: string) => ipcRenderer.invoke('rule:syncToDevice', deviceId),
-    batchUpdateIP: (deviceId: string, ruleIds: string[], newIP: string) =>
-      ipcRenderer.invoke('rule:batchUpdateIP', deviceId, ruleIds, newIP),
+    previewSync: (deviceId: string) => ipcRenderer.invoke('rule:previewSync', deviceId),
+    syncToDevice: (deviceId: string, token?: string) =>
+      ipcRenderer.invoke('rule:syncToDevice', deviceId, token),
+    previewBatchUpdateIP: (deviceId: string, ruleIds: string[], newIP: string) =>
+      ipcRenderer.invoke('rule:previewBatchUpdateIP', deviceId, ruleIds, newIP),
+    batchUpdateIP: (deviceId: string, ruleIds: string[], newIP: string, token?: string) =>
+      ipcRenderer.invoke('rule:batchUpdateIP', deviceId, ruleIds, newIP, token),
     batchUpdate: (ruleIds: string[], updates: RuleBatchUpdatePayload) =>
       ipcRenderer.invoke('rule:batchUpdate', ruleIds, updates),
     create: (deviceId: string, rule: RulePayload) =>
@@ -88,6 +103,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // 日志管理
   log: {
     query: (filter: LogFilter) => ipcRenderer.invoke('log:query', filter),
+    queryPage: (filter: LogFilter) => ipcRenderer.invoke('log:queryPage', filter),
     export: (filter: LogFilter) => ipcRenderer.invoke('log:export', filter),
     cleanup: (daysToKeep: number) => ipcRenderer.invoke('log:cleanup', daysToKeep),
   },
@@ -105,10 +121,16 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.invoke('automation:confirm-response', requestId, confirmed),
     getPendingConfirm: () => ipcRenderer.invoke('automation:getPendingConfirm'),
     onConfirmRequest: (callback: (data: ConfirmRequest) => void) => {
-      addMappedListener('automation:confirm-request', (data) => callback(data as ConfirmRequest));
+      addMappedListener('automation:confirm-request', callback as RendererListener);
     },
     removeConfirmRequestListener: (callback: (data: ConfirmRequest) => void) => {
       removeMappedListener('automation:confirm-request', callback as RendererListener);
+    },
+    onConfirmCancelled: (callback: () => void) => {
+      addMappedListener('automation:confirm-cancelled', callback);
+    },
+    removeConfirmCancelledListener: (callback: () => void) => {
+      removeMappedListener('automation:confirm-cancelled', callback);
     },
   },
 
@@ -126,7 +148,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     save: (type: string, data: ConfigPayload) => ipcRenderer.invoke('config:save', type, data),
     get: (type: string) => ipcRenderer.invoke('config:get', type),
     getAll: () => ipcRenderer.invoke('config:getAll'),
-    export: (filePath?: string) => ipcRenderer.invoke('config:export', filePath),
+    export: () => ipcRenderer.invoke('config:export'),
     import: (filePath: string) => ipcRenderer.invoke('config:import', filePath),
     reset: () => ipcRenderer.invoke('config:reset'),
   },
@@ -162,9 +184,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
   updater: {
     checkForUpdates: (showNoUpdateMessage?: boolean) =>
       ipcRenderer.invoke('updater:checkForUpdates', showNoUpdateMessage),
-    downloadUpdate: () => ipcRenderer.invoke('updater:downloadUpdate'),
-    quitAndInstall: () => ipcRenderer.invoke('updater:quitAndInstall'),
+    downloadUpdate: (version: string, policySignature: string) =>
+      ipcRenderer.invoke('updater:downloadUpdate', version, policySignature),
+    quitAndInstall: (version: string, policySignature: string) =>
+      ipcRenderer.invoke('updater:quitAndInstall', version, policySignature),
     getCurrentVersion: () => ipcRenderer.invoke('updater:getCurrentVersion'),
+    getState: () => ipcRenderer.invoke('updater:getState'),
+    quitApp: () => ipcRenderer.invoke('updater:quitApp'),
   },
 
   // 窗口控制
@@ -177,11 +203,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // 事件监听
   on: (channel: string, callback: RendererListener) => {
+    assertRendererEventChannel(channel);
     addMappedListener(channel, callback);
   },
 
   // 移除监听
   off: (channel: string, callback: RendererListener) => {
+    assertRendererEventChannel(channel);
     removeMappedListener(channel, callback);
   },
 });

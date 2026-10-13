@@ -4,10 +4,10 @@ export interface IPCheckSource {
   parser: (response: string) => string;
 }
 
-const extractIPv4 = (text: string): string => {
-  const match = text.match(/(\d{1,3}\.){3}\d{1,3}/);
-  return match ? match[0] : text.trim();
-};
+// ponytail: kept local (same pattern as ip-monitor-utils) because src tests load this file without a resolver;
+// ip-monitor rejects non-global or non-canonical results via isGlobalUnicastIPv4.
+const extractIPv4 = (text: string): string =>
+  text.match(/(?<![\d.])\d{1,3}(?:\.\d{1,3}){3}(?!\.?\d)/)?.[0] ?? text.trim();
 
 export const createIPCheckSources = (): Map<string, IPCheckSource> =>
   new Map([

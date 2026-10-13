@@ -19,6 +19,7 @@ import { useTranslation } from 'react-i18next';
 
 import type { Device, Log } from '@/types';
 import { useMonitorStore } from '@/stores/monitor.store';
+import AutomationStatusBanner from '../Automation/components/AutomationStatusBanner';
 import { startMonitoringService, stopMonitoringService } from '@/utils/monitorControl';
 
 type AutomationDashboardConfig = {
@@ -160,13 +161,18 @@ const Dashboard: React.FC = () => {
         throw new Error('automation API 未就绪');
       }
       const result = await api.automation.manualUpdate();
+      if (result.cancelled) return result;
       if (!result.success) {
         throw new Error(result.error || t('common.error'));
       }
       return result;
     },
-    onSuccess: () => {
-      message.success(t('common.success'));
+    onSuccess: (result) => {
+      if (result.cancelled) {
+        message.info(result.message || '已取消更新');
+        return;
+      }
+      message.success(result.message || `已核实 ${result.successCount ?? 0} 台设备的规则配置`);
     },
     onError: (error: unknown) => {
       message.error(getErrorMessage(error, t('common.error')));
@@ -234,6 +240,7 @@ const Dashboard: React.FC = () => {
 
   return (
     <div>
+      <AutomationStatusBanner />
       <Row gutter={[16, 16]} style={{ marginBottom: 24 }}>
         <Col xs={24} sm={12} lg={6}>
           <Card>
@@ -281,24 +288,25 @@ const Dashboard: React.FC = () => {
 
       <Card title={t('dashboard.quickActions')} style={{ marginBottom: 24 }}>
         <Space size="middle" wrap>
-          <Button
-            type="primary"
-            icon={<PlayCircleOutlined />}
-            onClick={() => startMonitorMutation.mutate()}
-            disabled={isMonitoring}
-            loading={startMonitorMutation.isPending}
-          >
-            {t('dashboard.startMonitoring')}
-          </Button>
-          <Button
-            danger
-            icon={<PauseCircleOutlined />}
-            onClick={() => stopMonitorMutation.mutate()}
-            disabled={!isMonitoring}
-            loading={stopMonitorMutation.isPending}
-          >
-            {t('dashboard.stopMonitoring')}
-          </Button>
+          {/* One toggle instead of a start/stop pair where one button is always disabled. */}
+          {isMonitoring ? (
+            <Button
+              icon={<PauseCircleOutlined />}
+              onClick={() => stopMonitorMutation.mutate()}
+              loading={stopMonitorMutation.isPending}
+            >
+              {t('dashboard.stopMonitoring')}
+            </Button>
+          ) : (
+            <Button
+              type="primary"
+              icon={<PlayCircleOutlined />}
+              onClick={() => startMonitorMutation.mutate()}
+              loading={startMonitorMutation.isPending}
+            >
+              {t('dashboard.startMonitoring')}
+            </Button>
+          )}
           <Button
             icon={<SyncOutlined />}
             onClick={() => manualUpdateMutation.mutate()}
@@ -338,7 +346,7 @@ const Dashboard: React.FC = () => {
           items={
             recentEvents && recentEvents.length > 0
               ? recentEvents.map((event) => {
-                  let color = 'blue';
+                  let color = 'gray';
                   let tagColor: 'default' | 'success' | 'warning' | 'error' = 'default';
                   let tagText = t('common.info');
 
@@ -384,7 +392,7 @@ const Dashboard: React.FC = () => {
               : [
                   {
                     color: 'gray',
-                    children: <div style={{ color: '#999' }}>{t('dashboard.recentEvents')}</div>,
+                    children: <div style={{ color: '#999' }}>暂无事件</div>,
                   },
                 ]
           }

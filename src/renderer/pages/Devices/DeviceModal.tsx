@@ -54,13 +54,51 @@ const getSupportedAuthType = (authType?: Credential['authType']): SupportedAuthT
 
 const DeviceModal: React.FC<DeviceModalProps> = ({ open, device, onClose, onSuccess }) => {
   const { t } = useTranslation();
-  const { message } = App.useApp();
+  const { message, modal } = App.useApp();
   const [form] = Form.useForm<DeviceFormValues>();
   const isEdit = !!device;
   const [authType, setAuthType] = useState<SupportedAuthType>('Password');
   const [storedCredential, setStoredCredential] = useState<Credential | null>(null);
   const selectedConnectionType = Form.useWatch('connectionType', form) || 'SSH';
   const selectedFormAuthType = Form.useWatch('authType', form) || authType;
+
+  const showFirstTrust = (
+    deviceId: string | undefined,
+    hostKey?: { fingerprint: string; host: string; port: number; changed: boolean }
+  ) => {
+    if (!hostKey) return;
+    if (hostKey.changed) {
+      message.error('SSH主机指纹已变化，连接已拒绝。请管理员核查，禁止直接覆盖信任。');
+      return;
+    }
+    if (!deviceId) {
+      message.info('临时连接已拒绝未知主机。请先保存设备，再测试连接并核对首次主机指纹。');
+      return;
+    }
+    modal.confirm({
+      title: '首次信任 SSH 主机',
+      content: (
+        <div>
+          <p>连接已拒绝。请通过设备控制台等可信渠道核对以下指纹；确认表示管理员已完成核对。</p>
+          <p>
+            {hostKey.host}:{hostKey.port}
+          </p>
+          <code style={{ wordBreak: 'break-all' }}>{hostKey.fingerprint}</code>
+        </div>
+      ),
+      okText: '已核对指纹，信任此设备',
+      cancelText: '取消',
+      onOk: async () => {
+        const trust = await window.electronAPI.device.trustHostKey(deviceId, hostKey.fingerprint);
+        if (!trust.success) {
+          message.error(trust.message);
+          return Promise.reject(new Error(trust.message));
+        }
+        message.info(trust.message);
+        onSuccess();
+      },
+    });
+  };
 
   useEffect(() => {
     let isActive = true;
@@ -100,6 +138,7 @@ const DeviceModal: React.FC<DeviceModalProps> = ({ open, device, onClose, onSucc
         authType: nextAuthType,
         username: credential?.username,
         password: credential?.password,
+        passphrase: credential?.passphrase,
       });
     };
 
@@ -171,7 +210,7 @@ const DeviceModal: React.FC<DeviceModalProps> = ({ open, device, onClose, onSucc
         username,
         password,
         privateKeyPath,
-        passphrase: _passphrase,
+        passphrase,
         authType: formAuthType,
         saveToCredentialManager: _saveToCredentialManager,
         ...deviceData
@@ -208,6 +247,7 @@ const DeviceModal: React.FC<DeviceModalProps> = ({ open, device, onClose, onSucc
           username,
           password,
           privateKeyPath,
+          passphrase,
         },
         storedCredential
       );
@@ -256,6 +296,7 @@ const DeviceModal: React.FC<DeviceModalProps> = ({ open, device, onClose, onSucc
                   message.success(`连接测试成功 - 延迟 ${result.latency}ms`);
                 } else {
                   message.warning(`连接测试失败: ${result.message}`);
+                  showFirstTrust(savedDeviceId, result.hostKey);
                 }
                 onSuccess();
               }
@@ -298,6 +339,7 @@ const DeviceModal: React.FC<DeviceModalProps> = ({ open, device, onClose, onSucc
 
       try {
         const result = await api.device.testDirectConnection({
+          deviceId: device?.id,
           connectionType: selectedConnectionTypeValue,
           host: values.host || '',
           port: values.port || 22,
@@ -305,7 +347,7 @@ const DeviceModal: React.FC<DeviceModalProps> = ({ open, device, onClose, onSucc
           password: values.password || storedCredential?.password,
           privateKeyPath: values.privateKeyPath,
           privateKey: values.privateKeyPath ? undefined : storedCredential?.privateKey,
-          passphrase: values.passphrase,
+          passphrase: values.passphrase ?? storedCredential?.passphrase,
           authType: selectedAuthType,
         });
 
@@ -315,6 +357,7 @@ const DeviceModal: React.FC<DeviceModalProps> = ({ open, device, onClose, onSucc
           message.success(`${t('devices.connectionSuccess')}! ${result.latency}ms`);
         } else {
           message.error(`${t('devices.connectionFailed')}: ${result.message}`);
+          showFirstTrust(device?.id, result.hostKey);
         }
       } catch (error) {
         hideLoading();
@@ -466,7 +509,9 @@ const DeviceModal: React.FC<DeviceModalProps> = ({ open, device, onClose, onSucc
               <Input.Password />
             </Form.Item>
             <Form.Item name="saveToCredentialManager" valuePropName="checked">
-              <Checkbox>保存到 Windows 凭据管理器</Checkbox>
+              <Checkbox disabled checked>
+                保存为本机加密凭据
+              </Checkbox>
             </Form.Item>
           </>
         )}

@@ -3,7 +3,7 @@
  * 
  * 功能：
  * 1. 修改 package.json 的版本号
- * 2. 修改设置页面显示的版本号
+ * 2. 设置页面直接读取 package.json 版本
  * 3. 自动处理 v 前缀
  * 
  * 使用方法：
@@ -78,49 +78,6 @@ function updatePackageJson(newVersion) {
   }
 }
 
-// 更新设置页面
-function updateSettingsPage(newVersion) {
-  const settingsPath = path.join(projectRoot, 'src', 'renderer', 'pages', 'Settings', 'index.tsx');
-
-  try {
-    let content = fs.readFileSync(settingsPath, 'utf8');
-    let updated = false;
-    let oldVersion = null;
-
-    // 匹配版本号显示行：<p>{t('settings.version')}: V1.0.6</p>
-    const versionPattern = /(\{t\('settings\.version'\)\}:\s*V?)([\d\.]+)(<\/p>)/;
-    const versionMatch = content.match(versionPattern);
-
-    if (versionMatch) {
-      oldVersion = versionMatch[2];
-      content = content.replace(versionPattern, `$1${newVersion}$3`);
-      updated = true;
-    }
-
-    // 匹配许可证对话框中的版本号：<p>版本: V1.0.6</p>
-    const licensePattern = /(版本:\s*V?)([\d\.]+)(<\/p>)/;
-    const licenseMatch = content.match(licensePattern);
-
-    if (licenseMatch) {
-      if (!oldVersion) oldVersion = licenseMatch[2];
-      content = content.replace(licensePattern, `$1${newVersion}$3`);
-      updated = true;
-    }
-
-    if (updated) {
-      fs.writeFileSync(settingsPath, content, 'utf8');
-      log(`✅ Settings 页面: V${oldVersion} → V${newVersion}`, 'green');
-      return true;
-    } else {
-      log(`⚠️  Settings 页面: 未找到版本号匹配项`, 'yellow');
-      return false;
-    }
-  } catch (error) {
-    log(`❌ 更新 Settings 页面失败: ${error.message}`, 'red');
-    return false;
-  }
-}
-
 // 显示当前版本
 function showCurrentVersion() {
   const packagePath = path.join(projectRoot, 'package.json');
@@ -187,7 +144,6 @@ async function main() {
   // 执行更新
   const results = [
     updatePackageJson(newVersion),
-    updateSettingsPage(newVersion),
   ];
 
   // 汇总结果

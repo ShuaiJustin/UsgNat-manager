@@ -14,6 +14,8 @@ export type AutomationFormValues = {
   delayMinutes?: number;
   scheduledTime?: Dayjs | string | null;
   selectedDevices?: string[];
+  clientEgressConfirmed?: boolean;
+  managedRuleIds?: string[];
   backupOptions?: string[];
   backupKeepCount?: number;
   securityOptions?: string[];
@@ -66,6 +68,28 @@ export type AutomationFormSnapshot = {
 
 const DEFAULT_NOTIFY_TYPES = ['ipChange', 'updateSuccess', 'updateFailed'];
 
+export const buildStoredAutomationSettings = (
+  values: AutomationFormValues
+): StoredAutomationConfig => ({
+  ipMonitorEnabled: values.ipMonitorEnabled !== false,
+  checkInterval: values.checkInterval ?? 5,
+  confirmCount: values.confirmCount ?? 3,
+  checkSources: normalizeAutomationCheckSources(values.checkSources),
+  autoUpdateEnabled: values.autoUpdateEnabled === true,
+  triggerType: values.triggerType ?? 'immediate',
+  delayMinutes: values.delayMinutes ?? 5,
+  scheduledTime: values.scheduledTime,
+  selectedDevices: values.selectedDevices ?? [],
+  clientEgressConfirmed: values.clientEgressConfirmed === true,
+  managedRuleIds: values.managedRuleIds ?? [],
+  backupOptions: Array.from(new Set(['autoBackup', ...(values.backupOptions ?? [])])),
+  backupKeepCount: values.backupKeepCount ?? 10,
+  securityOptions: Array.from(new Set(['verifyRules', ...(values.securityOptions ?? [])])),
+  windowsNotifyEnabled: values.windowsNotifyEnabled !== false,
+  notifyTypes: values.notifyTypes ?? [...DEFAULT_NOTIFY_TYPES],
+  wechatNotifyEnabled: false,
+});
+
 const getStoredSmtpEncryption = (emailConfig?: StoredEmailConfig | null): string => {
   if (emailConfig?.secure) {
     return 'ssl';
@@ -102,7 +126,7 @@ export const buildAutomationFormSnapshot = ({
     wechatNotifyEnabled = automationConfig.wechatNotifyEnabled ?? false;
     wechatType = automationConfig.wechatType || 'work';
 
-    Object.assign(formValues, {
+    const storedValues: AutomationFormValues = {
       ipMonitorEnabled: automationConfig.ipMonitorEnabled,
       checkInterval: automationConfig.checkInterval,
       confirmCount: automationConfig.confirmCount,
@@ -112,6 +136,8 @@ export const buildAutomationFormSnapshot = ({
       delayMinutes: automationConfig.delayMinutes,
       scheduledTime: parseScheduledTime(automationConfig.scheduledTime),
       selectedDevices: automationConfig.selectedDevices,
+      clientEgressConfirmed: automationConfig.clientEgressConfirmed === true,
+      managedRuleIds: automationConfig.managedRuleIds ?? [],
       backupOptions: automationConfig.backupOptions,
       backupKeepCount: automationConfig.backupKeepCount,
       securityOptions: automationConfig.securityOptions,
@@ -134,7 +160,11 @@ export const buildAutomationFormSnapshot = ({
       appId: automationConfig.appId,
       appSecret: automationConfig.appSecret,
       templateId: automationConfig.templateId,
-    });
+    };
+    Object.assign(
+      formValues,
+      Object.fromEntries(Object.entries(storedValues).filter(([, value]) => value !== undefined))
+    );
   }
 
   if (emailConfig) {
@@ -155,6 +185,13 @@ export const buildAutomationFormSnapshot = ({
     }
   }
 
+  formValues.backupOptions = Array.from(
+    new Set(['autoBackup', ...(formValues.backupOptions ?? [])])
+  );
+  formValues.securityOptions = Array.from(
+    new Set(['verifyRules', ...(formValues.securityOptions ?? [])])
+  );
+
   return {
     formValues,
     emailNotifyEnabled,
@@ -172,8 +209,10 @@ export const createAutomationFormSnapshot = (
     ...formValues,
     checkSources: normalizeAutomationCheckSources(formValues.checkSources),
     selectedDevices: formValues.selectedDevices ?? [],
-    backupOptions: formValues.backupOptions ?? [],
-    securityOptions: formValues.securityOptions ?? [],
+    clientEgressConfirmed: formValues.clientEgressConfirmed === true,
+    managedRuleIds: formValues.managedRuleIds ?? [],
+    backupOptions: Array.from(new Set(['autoBackup', ...(formValues.backupOptions ?? [])])),
+    securityOptions: Array.from(new Set(['verifyRules', ...(formValues.securityOptions ?? [])])),
     notifyTypes: formValues.notifyTypes ?? [...DEFAULT_NOTIFY_TYPES],
   },
   ...options,

@@ -7,9 +7,10 @@ const tablePageSizeChanger: Exclude<PaginationProps['showSizeChanger'], boolean>
   getPopupContainer: (triggerNode) => triggerNode.ownerDocument.body,
 };
 
+// totalLabel is the unit noun, e.g. "条" renders "共 32 条".
 export const createTablePagination = (defaultPageSize: number, totalLabel: string) => ({
   defaultPageSize,
   pageSizeOptions: tablePageSizeOptions,
   showSizeChanger: tablePageSizeChanger,
-  showTotal: (total: number) => `${totalLabel}: ${total}`,
+  showTotal: (total: number) => `共 ${total} ${totalLabel}`,
 });

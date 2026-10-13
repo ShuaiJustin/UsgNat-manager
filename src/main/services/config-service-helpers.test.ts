@@ -3,60 +3,65 @@ import test from 'node:test';
 
 import {
   createConfigExportPayload,
-  decryptSensitiveConfig,
-  encryptSensitiveConfig,
+  assertConfigType,
+  isSshHostKeyConfig,
   parseStoredConfigs,
   summarizeConfigStats,
+  mergeImportedConfig,
+  assertStoredConfiguration,
 } from './config-service-helpers.ts';
 
-test('encryptSensitiveConfig encrypts the email password only', () => {
-  const encrypted = encryptSensitiveConfig(
-    'email',
-    {
-      host: 'smtp.example.com',
-      auth: {
-        user: 'admin',
-        pass: 'secret-password',
-      },
-    },
-    'test-key'
-  );
+test('config type whitelist rejects ssh host keys and unknown keys', () => {
+  for (const type of ['app', 'update', 'email', 'automation'])
+    assert.doesNotThrow(() => assertConfigType(type));
+  for (const type of ['ssh-host:device-1', 'unknown', '', undefined, 1])
+    assert.throws(() => assertConfigType(type), /未知配置类型/);
+  assert.equal(isSshHostKeyConfig('ssh-host:device-1'), true);
+  assert.equal(isSshHostKeyConfig('app'), false);
+});
 
-  assert.notEqual(encrypted.auth.pass, 'secret-password');
-  assert.equal(encrypted.auth.user, 'admin');
+test('stored service config accepts defaulted legacy fields and rejects invalid runtime inputs', () => {
+  assert.doesNotThrow(() => assertStoredConfiguration('app', {}));
+  assert.doesNotThrow(() =>
+    assertStoredConfiguration('automation', {
+      enabled: false,
+      checkSources: ['cip', 'ip138'],
+      selectedDevices: [],
+    })
+  );
+  assert.doesNotThrow(() => assertStoredConfiguration('email', { enabled: false }));
+  for (const [type, value] of [
+    ['app', { logRetentionDays: 0 }],
+    ['app', { logRetentionDays: 7.5 }],
+    ['automation', { enabled: 'true' }],
+    ['automation', { triggerType: 'unexpected' }],
+    ['automation', { checkInterval: 0 }],
+    ['automation', { confirmCount: 1.5 }],
+    ['automation', { checkSources: ['unknown'] }],
+    ['automation', { selectedDevices: 'd' }],
+    ['automation', { scheduledTime: '25:00' }],
+    ['email', { enabled: true, host: 'smtp' }],
+    ['email', { auth: { pass: 123 } }],
+  ] as const)
+    assert.throws(() => assertStoredConfiguration(type, value));
+});
+
+test('import of masked email password preserves the current secret', () => {
   assert.deepEqual(
-    encryptSensitiveConfig('system', { auth: { pass: 'secret-password' } }, 'test-key'),
-    { auth: { pass: 'secret-password' } }
+    mergeImportedConfig(
+      'email',
+      { host: 'new-host', auth: { user: 'new-user', pass: '***masked***' } },
+      { auth: { pass: 'original-secret' } }
+    ),
+    { host: 'new-host', auth: { user: 'new-user', pass: 'original-secret' } }
   );
 });
 
-test('decryptSensitiveConfig returns plaintext when the payload was encrypted', () => {
-  const encrypted = encryptSensitiveConfig(
-    'email',
-    {
-      auth: {
-        pass: 'secret-password',
-      },
-    },
-    'test-key'
+test('masked password without existing secret requires re-entry', () => {
+  assert.throws(
+    () => mergeImportedConfig('email', { auth: { pass: '***masked***' } }, null),
+    /重新录入/
   );
-
-  assert.deepEqual(decryptSensitiveConfig('email', encrypted, 'test-key', true), {
-    auth: {
-      pass: 'secret-password',
-    },
-  });
-});
-
-test('decryptSensitiveConfig preserves legacy or unavailable-key payloads', () => {
-  const legacyPayload = {
-    auth: {
-      pass: 'plain-text-password',
-    },
-  };
-
-  assert.deepEqual(decryptSensitiveConfig('email', legacyPayload, 'test-key', true), legacyPayload);
-  assert.deepEqual(decryptSensitiveConfig('email', legacyPayload, '', false), legacyPayload);
 });
 
 test('parseStoredConfigs parses JSON values and falls back to raw strings', () => {
@@ -106,4 +111,13 @@ test('summarizeConfigStats returns totals, keys, and the newest update time', ()
       lastUpdated: newest,
     }
   );
+});
+
+test('exports leave out host-key trust and unknown keys', () => {
+  const payload = createConfigExportPayload({
+    app: { theme: 'light' },
+    'ssh-host:device-1': { host: '1.2.3.4', port: 22, fingerprint: 'x' },
+    retired: true,
+  });
+  assert.deepEqual(Object.keys(payload.configs), ['app']);
 });

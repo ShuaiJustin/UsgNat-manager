@@ -3,7 +3,7 @@ import test from 'node:test';
 
 import { DEFAULT_SETTINGS_FORM_VALUES, buildSettingsFormSnapshot } from './settingsFormState.ts';
 
-test('buildSettingsFormSnapshot preserves stored settings instead of falling back to defaults', () => {
+test('buildSettingsFormSnapshot preserves user settings and forces truthful security capabilities', () => {
   const snapshot = buildSettingsFormSnapshot(
     {
       scale: '125',
@@ -23,9 +23,9 @@ test('buildSettingsFormSnapshot preserves stored settings instead of falling bac
   assert.equal(snapshot.logRetentionDays, 7);
   assert.equal(snapshot.autoStart, false);
   assert.equal(snapshot.useWindowsCredentials, false);
-  assert.equal(snapshot.encryptSensitiveData, false);
-  assert.equal(snapshot.requirePasswordOnStartup, true);
-  assert.equal(snapshot.logAllOperations, false);
+  assert.equal(snapshot.encryptSensitiveData, true);
+  assert.equal(snapshot.requirePasswordOnStartup, false);
+  assert.equal(snapshot.logAllOperations, true);
   assert.equal(snapshot.writeToWindowsEventLog, false);
 });
 

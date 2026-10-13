@@ -13,6 +13,8 @@ import { configService } from '../../services/config-service';
 import { customUpdater } from '../../services/custom-updater';
 import { logger } from '../../services/logger';
 import { prisma } from '../../services/prisma-client';
+import { backupService } from '../../services/backup-service';
+import { mandatoryUpdateBusinessGate } from '../../services/mandatory-update-business-gate';
 import { getErrorMessage } from './shared';
 
 type AppSystemConfig = Record<string, unknown> & {
@@ -34,7 +36,14 @@ const formatFileSize = (sizeInBytes: number): string => {
   return `${(sizeInBytes / 1024 / 1024).toFixed(2)} MB`;
 };
 
-export function registerSystemHandlers() {
+export function registerSystemHandlers(
+  options: {
+    aroundDataChange?: <T>(
+      reason: 'import' | 'reset' | 'restore',
+      action: () => Promise<T>
+    ) => Promise<T>;
+  } = {}
+) {
   ipcMain.handle('system:showNotification', async (_event, title: string, body: string) => {
     new Notification({ title, body }).show();
   });
@@ -49,6 +58,8 @@ export function registerSystemHandlers() {
   });
 
   ipcMain.handle('system:setTheme', async (_event, theme: string) => {
+    const release = mandatoryUpdateBusinessGate.tryEnter();
+    if (!release) return { success: false, error: '业务操作暂时停止，请稍后重试' };
     try {
       const config = (await configService.getConfig<AppSystemConfig>('app')) ?? {};
       await configService.saveConfig('app', { ...config, theme });
@@ -58,10 +69,14 @@ export function registerSystemHandlers() {
       const errorMessage = getErrorMessage(error, '设置主题失败');
       await logger.error('系统设置', '设置主题失败', { error: errorMessage });
       return { success: false, error: errorMessage };
+    } finally {
+      release();
     }
   });
 
   ipcMain.handle('system:setAutoStart', async (_event, enabled: boolean) => {
+    const release = mandatoryUpdateBusinessGate.tryEnter();
+    if (!release) return { success: false, error: '业务操作暂时停止，请稍后重试' };
     try {
       app.setLoginItemSettings({
         openAtLogin: enabled,
@@ -79,6 +94,8 @@ export function registerSystemHandlers() {
       const errorMessage = getErrorMessage(error, '设置开机自启动失败');
       await logger.error('系统设置', '设置开机自启动失败', { error: errorMessage });
       return { success: false, error: errorMessage };
+    } finally {
+      release();
     }
   });
 
@@ -113,14 +130,45 @@ export function registerSystemHandlers() {
 
   ipcMain.handle('database:clearAll', async () => {
     try {
-      await prisma.$transaction([
-        prisma.natRule.deleteMany({}),
-        prisma.device.deleteMany({}),
-        prisma.credentialRef.deleteMany({}),
-        prisma.log.deleteMany({}),
-      ]);
-
-      await logger.warning('数据库管理', '已清空所有数据（设备、规则、凭据、日志）');
+      const clear = async () => {
+        await backupService.createBackup('清空业务数据前自动备份');
+        const automation =
+          (await configService.getConfig<Record<string, unknown>>('automation')) ?? {};
+        await prisma.$transaction([
+          prisma.natRule.deleteMany({}),
+          prisma.device.deleteMany({}),
+          prisma.credentialRef.deleteMany({}),
+          prisma.log.deleteMany({}),
+          prisma.config.upsert({
+            where: { key: 'automation' },
+            create: {
+              key: 'automation',
+              value: JSON.stringify({
+                ...automation,
+                autoUpdateEnabled: false,
+                selectedDevices: [],
+                managedRuleIds: [],
+                clientEgressConfirmed: false,
+              }),
+            },
+            update: {
+              value: JSON.stringify({
+                ...automation,
+                autoUpdateEnabled: false,
+                selectedDevices: [],
+                managedRuleIds: [],
+                clientEgressConfirmed: false,
+              }),
+            },
+          }),
+        ]);
+        await logger.warning(
+          '数据库管理',
+          '已清空所有数据（设备、规则、凭据、日志），并停用自动写入'
+        );
+      };
+      if (options.aroundDataChange) await options.aroundDataChange('reset', clear);
+      else await clear();
       return { success: true };
     } catch (error) {
       const errorMessage = getErrorMessage(error, '清空数据失败');
@@ -142,41 +190,43 @@ export function registerSystemHandlers() {
     }
   });
 
-  ipcMain.handle('updater:downloadUpdate', async () => {
-    try {
-      await customUpdater.downloadUpdate();
-      return { success: true };
-    } catch (error) {
-      const errorMessage = getErrorMessage(error, '下载更新失败');
-      await logger.error('自动更新', '下载更新失败', { error: errorMessage });
-      return {
-        success: false,
-        message: errorMessage,
-      };
+  ipcMain.handle(
+    'updater:downloadUpdate',
+    async (_event, version: string, policySignature: string) => {
+      try {
+        await customUpdater.downloadUpdate(version, policySignature);
+        return { success: true };
+      } catch (error) {
+        const errorMessage = getErrorMessage(error, '下载更新失败');
+        await logger.error('自动更新', '下载更新失败', { error: errorMessage });
+        return {
+          success: false,
+          message: errorMessage,
+        };
+      }
     }
-  });
+  );
 
-  ipcMain.handle('updater:quitAndInstall', async () => {
-    try {
-      await customUpdater.quitAndInstall();
-      return { success: true };
-    } catch (error) {
-      const errorMessage = getErrorMessage(error, '退出并安装失败');
-      await logger.error('自动更新', '退出并安装失败', { error: errorMessage });
-      return {
-        success: false,
-        message: errorMessage,
-      };
+  ipcMain.handle(
+    'updater:quitAndInstall',
+    async (_event, version: string, policySignature: string) => {
+      try {
+        await customUpdater.quitAndInstall(version, policySignature);
+        return { success: true };
+      } catch (error) {
+        const errorMessage = getErrorMessage(error, '退出并安装失败');
+        await logger.error('自动更新', '退出并安装失败', { error: errorMessage });
+        return {
+          success: false,
+          message: errorMessage,
+        };
+      }
     }
-  });
+  );
 
-  ipcMain.handle('updater:getCurrentVersion', async () => {
-    try {
-      return customUpdater.getCurrentVersion();
-    } catch {
-      return '1.0.2';
-    }
-  });
+  ipcMain.handle('updater:getCurrentVersion', async () => customUpdater.getCurrentVersion());
+  ipcMain.handle('updater:getState', async () => customUpdater.getCurrentState());
+  ipcMain.handle('updater:quitApp', async () => customUpdater.quitApp());
 
   ipcMain.handle('window:minimize', async (event) => {
     BrowserWindow.fromWebContents(event.sender)?.minimize();

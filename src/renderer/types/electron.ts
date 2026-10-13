@@ -16,6 +16,7 @@ type RuleDraft = Partial<NatRule>;
 type CredentialDraft = Partial<Credential>;
 
 type DirectConnectionConfig = {
+  deviceId?: string;
   host: string;
   port: number;
   connectionType?: Device['connectionType'];
@@ -39,6 +40,8 @@ type LogQueryFilter = {
   endDate?: Date;
   limit?: number;
   orderBy?: 'asc' | 'desc';
+  search?: string;
+  offset?: number;
 };
 
 type AutomationConfigPayload = {
@@ -51,6 +54,8 @@ type AutomationConfigPayload = {
   delayMinutes?: number;
   scheduledTime?: string | null;
   selectedDevices?: string[];
+  clientEgressConfirmed?: boolean;
+  managedRuleIds?: string[];
   backupOptions?: string[];
   backupKeepCount?: number;
   securityOptions?: string[];
@@ -148,19 +153,52 @@ export interface ElectronAPI {
     delete: (id: string) => Promise<void>;
     testConnection: (id: string) => Promise<ConnectionTestResult>;
     testDirectConnection: (config: DirectConnectionConfig) => Promise<ConnectionTestResult>;
+    trustHostKey: (id: string, fingerprint: string) => Promise<IpcResult>;
   };
   rule: {
     getAll: (deviceId: string) => Promise<NatRule[]>;
     getTotalCount: () => Promise<number>;
     syncFromDevice: (deviceId: string) => Promise<NatRule[]>;
+    previewSync: (deviceId: string) => Promise<{
+      added: string[];
+      deleted: string[];
+      updated: string[];
+      token: string;
+    }>;
     syncToDevice: (
-      deviceId: string
-    ) => Promise<IpcResult & { syncedCount?: number; updated?: number }>;
+      deviceId: string,
+      token?: string
+    ) => Promise<
+      IpcResult & {
+        syncedCount?: number;
+        updated?: number;
+        status?: 'verified' | 'unsaved' | 'failed' | 'partial' | 'unknown';
+        backupId?: string;
+      }
+    >;
     batchUpdateIP: (
       deviceId: string,
       ruleIds: string[],
+      newIP: string,
+      token?: string
+    ) => Promise<
+      IpcResult & {
+        updated?: number;
+        status?: 'verified' | 'unsaved' | 'failed' | 'partial' | 'unknown' | 'local-only';
+        backupId?: string;
+      }
+    >;
+    previewBatchUpdateIP: (
+      deviceId: string,
+      ruleIds: string[],
       newIP: string
-    ) => Promise<IpcResult & { updated?: number }>;
+    ) => Promise<{
+      added: string[];
+      deleted: string[];
+      updated: string[];
+      token: string;
+      localOnlyCount: number;
+    }>;
     batchUpdate: (
       ruleIds: string[],
       updates: RuleBatchUpdatePayload
@@ -182,6 +220,7 @@ export interface ElectronAPI {
   };
   log: {
     query: (filter: LogQueryFilter) => Promise<Log[]>;
+    queryPage: (filter: LogQueryFilter) => Promise<{ rows: Log[]; total: number }>;
     export: (filter: LogQueryFilter) => Promise<string>;
     cleanup: (daysToKeep: number) => Promise<{ success: boolean; count: number }>;
   };
@@ -190,12 +229,20 @@ export interface ElectronAPI {
     stop: () => Promise<IpcResult>;
     getConfig: <T = AutomationConfigPayload>() => Promise<T>;
     getStatus: <T = AutomationStatus>() => Promise<T>;
-    manualUpdate: (newIP?: string) => Promise<IpcResult>;
+    manualUpdate: (newIP?: string) => Promise<
+      IpcResult & {
+        cancelled?: boolean;
+        successCount?: number;
+        failedCount?: number;
+      }
+    >;
     updateConfig: (config: AutomationConfigPayload) => Promise<IpcResult>;
     confirmResponse: (requestId: string, confirmed: boolean) => Promise<IpcResult>;
     getPendingConfirm: () => Promise<AutomationConfirmRequest | null>;
     onConfirmRequest: (callback: (data: AutomationConfirmRequest) => void) => void;
     removeConfirmRequestListener: (callback: (data: AutomationConfirmRequest) => void) => void;
+    onConfirmCancelled: (callback: () => void) => void;
+    removeConfirmCancelledListener: (callback: () => void) => void;
   };
   email: {
     configure: (config: EmailConfigPayload) => Promise<{ success: boolean }>;
@@ -207,13 +254,13 @@ export interface ElectronAPI {
     save: <T extends UnknownRecord>(type: string, data: T) => Promise<{ success: boolean }>;
     get: <T = UnknownRecord>(type: string) => Promise<T | null>;
     getAll: <T extends UnknownRecord = UnknownRecord>() => Promise<T>;
-    export: (filePath?: string) => Promise<{ success: boolean; path: string; error?: string }>;
+    export: () => Promise<{ success: boolean; path: string; error?: string }>;
     import: (filePath: string) => Promise<IpcResult>;
     reset: () => Promise<{ success: boolean }>;
   };
   backup: {
     create: (description?: string) => Promise<BackupEntry>;
-    restore: (filePath: string) => Promise<{ success: boolean }>;
+    restore: (filePath: string) => Promise<IpcResult>;
     list: () => Promise<BackupEntry[]>;
     delete: (filename: string) => Promise<{ success: boolean }>;
     cleanup: (keepCount?: number) => Promise<{ success: boolean; deleted: number }>;
@@ -233,9 +280,11 @@ export interface ElectronAPI {
   };
   updater: {
     checkForUpdates: (showNoUpdateMessage?: boolean) => Promise<UpdateCheckResult>;
-    downloadUpdate: () => Promise<IpcResult>;
-    quitAndInstall: () => Promise<IpcResult>;
+    downloadUpdate: (version: string, policySignature: string) => Promise<IpcResult>;
+    quitAndInstall: (version: string, policySignature: string) => Promise<IpcResult>;
     getCurrentVersion: () => Promise<string>;
+    getState: () => Promise<unknown>;
+    quitApp: () => Promise<void>;
   };
   window: WindowControls;
   on: (channel: string, callback: (...args: unknown[]) => void) => void;

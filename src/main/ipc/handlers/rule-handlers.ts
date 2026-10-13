@@ -1,12 +1,30 @@
 import type { Device, NatRule, Prisma } from '@prisma/client';
-import { ipcMain } from 'electron';
+import { app, ipcMain, type IpcMainInvokeEvent } from 'electron';
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import { randomUUID } from 'node:crypto';
+import { automationService } from '../../services/automation-service';
 import { credentialManager } from '../../services/credential-manager';
 import { logger } from '../../services/logger';
 import { notifier } from '../../services/notifier';
 import { prisma } from '../../services/prisma-client';
 import { sshManager } from '../../services/ssh-manager';
-import { usgParser, type ParsedNatRule } from '../../services/usg-parser';
-import { assertBatchUpdateIPInput, getRuleIdsOutsideDevice } from './rule-handler-helpers';
+import { mandatoryUpdateBusinessGate } from '../../services/mandatory-update-business-gate';
+import {
+  assertNoNatEndpointConflicts,
+  usgParser,
+  type ParsedNatRule,
+} from '../../services/usg-parser';
+import {
+  assertBatchUpdateIPInput,
+  getRuleIdsOutsideDevice,
+  replaceDeviceRuleSnapshot,
+  getRuleSyncPreview,
+  executeVerifiedRuleWrite,
+  equalDeviceRules,
+  getBatchIPTarget,
+  splitSaveCommands,
+} from './rule-handler-helpers';
 import { assertSupportedDeviceAccess } from './shared';
 
 type RuleWritePayload = {
@@ -20,537 +38,383 @@ type RuleWritePayload = {
   description?: string | null;
   noReverse?: boolean | null;
 };
-
 type RuleUpdatePayload = Partial<RuleWritePayload>;
+const assertRulePayload = (rule: RuleUpdatePayload) => {
+  if (
+    !rule ||
+    typeof rule !== 'object' ||
+    Object.keys(rule).some(
+      (key) =>
+        ![
+          'ruleName',
+          'protocol',
+          'globalIp',
+          'globalPort',
+          'insideIp',
+          'insidePort',
+          'enabled',
+          'description',
+          'noReverse',
+        ].includes(key)
+    )
+  )
+    throw new Error('规则修改包含不支持的字段');
+};
+const toParsedRule = (rule: NatRule): ParsedNatRule => ({
+  ...rule,
+  protocol: rule.protocol as ParsedNatRule['protocol'],
+  description: rule.description ?? undefined,
+});
+const deviceIdentity = (device: Device) => JSON.stringify([device.id, device.host, device.port]);
+const guardedHandle = <Args extends unknown[], Result>(
+  channel: string,
+  action: (event: IpcMainInvokeEvent, ...args: Args) => Promise<Result>
+) =>
+  ipcMain.handle(channel, async (event, ...args: Args) => {
+    const release = mandatoryUpdateBusinessGate.tryEnter();
+    if (!release) throw new Error('业务操作暂时停止，请稍后重试');
+    try {
+      return await action(event, ...args);
+    } finally {
+      release();
+    }
+  });
 
-const getErrorMessage = (error: unknown): string =>
-  error instanceof Error ? error.message : String(error);
-
-const ensureSshConnected = async (
-  deviceId: string,
-  device: Device,
-  credential: Awaited<ReturnType<typeof credentialManager.getCredential>>
-): Promise<void> => {
-  if (sshManager.isConnected(deviceId)) {
-    return;
-  }
-
-  if (!credential) {
-    throw new Error('未配置凭据');
-  }
-
-  const reconnectResult = await sshManager.connect(deviceId, {
+const ensureConnected = async (device: Device) => {
+  if (sshManager.isConnected(device.id)) return;
+  const credential = await credentialManager.getCredential(device.id);
+  if (!credential) throw new Error('未配置凭据');
+  assertSupportedDeviceAccess(device, credential);
+  const result = await sshManager.connect(device.id, {
     host: device.host,
     port: device.port,
     username: credential.username || 'admin',
     password: credential.password,
     privateKey: credential.privateKey,
+    passphrase: credential.passphrase,
   });
+  if (!result.success) throw new Error('连接失败: ' + result.message);
+};
+const readDeviceRules = async (device: Device): Promise<ParsedNatRule[]> => {
+  await ensureConnected(device);
+  const result = await sshManager.executeCommand(
+    device.id,
+    'display current-configuration | include nat server'
+  );
+  if (!result.success) throw new Error('设备配置读取失败: ' + (result.error || '未知错误'));
+  return usgParser.parseNatServerSnapshot(result.output, result.complete === true);
+};
+const withDevice = async <T>(
+  deviceId: string,
+  action: (device: Device) => Promise<T>
+): Promise<T> =>
+  sshManager.withDeviceOperation(deviceId, async () => {
+    const device = await prisma.device.findUnique({ where: { id: deviceId } });
+    if (!device) throw new Error('设备不存在');
+    try {
+      return await action(device);
+    } finally {
+      await sshManager.disconnect(deviceId);
+    }
+  });
+const backupDevice = async (device: Device, before: ParsedNatRule[]): Promise<string> => {
+  await ensureConnected(device);
+  const result = await sshManager.executeCommand(device.id, 'display current-configuration');
+  if (!result.success || !result.complete || !result.output.trim())
+    throw new Error('变更前完整设备备份失败，已阻止下发');
+  const backupRules = usgParser.parseNatServerSnapshot(
+    result.output
+      .split(/\r?\n/)
+      .filter((line) => /^\s*nat\s+server\s/i.test(line))
+      .join('\n'),
+    true
+  );
+  if (!equalDeviceRules(before, backupRules)) throw new Error('备份时设备规则已变化，请重新预览');
+  const id = 'manual-' + randomUUID();
+  const dir = path.join(app.getPath('userData'), 'device-backups');
+  await fs.mkdir(dir, { recursive: true });
+  await fs.writeFile(
+    path.join(dir, id + '.json'),
+    JSON.stringify(
+      {
+        deviceId: device.id,
+        deviceName: device.name,
+        createdAt: new Date().toISOString(),
+        config: result.output,
+        rules: before,
+      },
+      null,
+      2
+    ),
+    { encoding: 'utf8', flag: 'wx', mode: 0o600 }
+  );
+  return id;
+};
+const writeDevice = async (
+  device: Device,
+  before: ParsedNatRule[],
+  expected: ParsedNatRule[],
+  commands: string[]
+) => {
+  const result = await executeVerifiedRuleWrite(before, expected, {
+    backup: () => backupDevice(device, before),
+    execute: async () => {
+      await ensureConnected(device);
+      return sshManager.executeBatchCommands(device.id, splitSaveCommands(commands));
+    },
+    read: () => readDeviceRules(device),
+    save: async () => {
+      await ensureConnected(device);
+      return sshManager.executeBatchCommands(device.id, ['save', 'y']);
+    },
+    rollback: async (actual) => {
+      const restore = splitSaveCommands(usgParser.generateSyncToDeviceCommands(actual, before));
+      if (!restore.length) return { success: true };
+      await ensureConnected(device);
+      return sshManager.executeBatchCommands(device.id, restore);
+    },
+  });
+  // Device rules changed outside automation; its next observation must re-read devices.
+  automationService.invalidateAppliedState();
+  if (result.status === 'verified')
+    await logger.success('规则下发', result.message, {
+      deviceId: device.id,
+      backupId: result.backupId,
+    });
+  else if (result.status === 'unsaved')
+    await logger.warning('规则下发', result.message, {
+      deviceId: device.id,
+      backupId: result.backupId,
+    });
+  else
+    await logger.error('规则下发', result.message, {
+      deviceId: device.id,
+      status: result.status,
+      backupId: result.backupId,
+    });
+  return result;
+};
 
-  if (!reconnectResult.success) {
-    throw new Error(`重新连接失败: ${reconnectResult.message}`);
-  }
+const batchPlan = async (device: Device, ruleIds: string[], newIP: string) => {
+  assertBatchUpdateIPInput({ deviceId: device.id, ruleIds, newIP });
+  const rules = await prisma.natRule.findMany({ where: { id: { in: ruleIds } } });
+  if (rules.length !== new Set(ruleIds).size) throw new Error('部分所选规则不存在');
+  if (getRuleIdsOutsideDevice(rules, device.id).length) throw new Error('所选规则不属于目标设备');
+  const parsed = rules.map(toParsedRule);
+  parsed.forEach((rule) => usgParser.assertWritableNatRule(rule));
+  const enabled = parsed.filter((rule) => rule.enabled);
+  const before = enabled.length ? await readDeviceRules(device) : [];
+  const expected = getBatchIPTarget(before, parsed, newIP);
+  assertNoNatEndpointConflicts(
+    expected,
+    expected.filter((rule) => !before.includes(rule))
+  );
+  const preview = getRuleSyncPreview(
+    JSON.stringify([deviceIdentity(device), [...ruleIds].sort(), newIP, rules]),
+    before,
+    expected
+  );
+  return {
+    rules,
+    enabled,
+    before,
+    expected,
+    preview: { ...preview, localOnlyCount: rules.length - enabled.length },
+  };
 };
 
 export function registerRuleHandlers() {
-  ipcMain.handle('rule:getAll', async (event, deviceId: string) => {
-    return await prisma.natRule.findMany({
-      where: { deviceId },
-      orderBy: { createdAt: 'desc' },
+  ipcMain.handle('rule:getAll', async (_event, deviceId: string) =>
+    prisma.natRule.findMany({ where: { deviceId }, orderBy: { createdAt: 'desc' } })
+  );
+  ipcMain.handle('rule:getTotalCount', async () => prisma.natRule.count());
+
+  guardedHandle('rule:syncFromDevice', async (_event, deviceId: string) =>
+    withDevice(deviceId, async (device) => {
+      const snapshot = await readDeviceRules(device);
+      const saved = await replaceDeviceRuleSnapshot(prisma, deviceId, snapshot);
+      await logger.success('获取规则', '完整设备快照已覆盖本地缓存：' + saved.length + ' 条规则', {
+        deviceId,
+      });
+      return saved;
+    })
+  );
+  guardedHandle('rule:previewSync', async (_event, deviceId: string) =>
+    withDevice(deviceId, async (device) => {
+      const deviceRules = await readDeviceRules(device);
+      const localRules = (await prisma.natRule.findMany({ where: { deviceId } })).map(toParsedRule);
+      localRules.forEach((rule) => usgParser.assertWritableNatRule(rule));
+      // Builds the commands only to surface conflicts at preview time.
+      usgParser.generateSyncToDeviceCommands(deviceRules, localRules);
+      return getRuleSyncPreview(deviceIdentity(device), deviceRules, localRules);
+    })
+  );
+  guardedHandle('rule:syncToDevice', async (_event, deviceId: string, token?: string) =>
+    withDevice(deviceId, async (device) => {
+      const localRules = (await prisma.natRule.findMany({ where: { deviceId } })).map(toParsedRule);
+      localRules.forEach((rule) => usgParser.assertWritableNatRule(rule));
+      const deviceRules = await readDeviceRules(device);
+      const preview = getRuleSyncPreview(deviceIdentity(device), deviceRules, localRules);
+      if (!token || token !== preview.token)
+        throw new Error('规则或设备已变化，请重新预览并确认实际差异');
+      const commands = usgParser.generateSyncToDeviceCommands(deviceRules, localRules);
+      if (!commands.length)
+        return {
+          success: true,
+          status: 'verified',
+          syncedCount: 0,
+          message: '回读确认规则已一致，无需下发',
+          ...preview,
+        };
+      const result = await writeDevice(
+        device,
+        deviceRules,
+        localRules.filter((rule) => rule.enabled),
+        commands
+      );
+      return {
+        ...result,
+        ...preview,
+        syncedCount: result.success ? localRules.filter((rule) => rule.enabled).length : 0,
+      };
+    })
+  );
+
+  guardedHandle(
+    'rule:previewBatchUpdateIP',
+    async (_event, deviceId: string, ruleIds: string[], newIP: string) =>
+      withDevice(deviceId, async (device) => (await batchPlan(device, ruleIds, newIP)).preview)
+  );
+
+  guardedHandle(
+    'rule:batchUpdateIP',
+    async (_event, deviceId: string, ruleIds: string[], newIP: string, token?: string) =>
+      withDevice(deviceId, async (device) => {
+        const { rules, enabled, before, expected, preview } = await batchPlan(
+          device,
+          ruleIds,
+          newIP
+        );
+        if (!token || token !== preview.token)
+          throw new Error('规则或设备已变化，请重新预览并确认实际差异');
+        if (!enabled.length) {
+          await prisma.natRule.updateMany({
+            where: { id: { in: ruleIds }, deviceId },
+            data: { globalIp: newIP },
+          });
+          return {
+            success: true,
+            status: 'local-only',
+            updated: rules.length,
+            message: '已修改 ' + rules.length + ' 条禁用规则的本地待下发配置，未向设备发送命令',
+          };
+        }
+        const commands = usgParser.generateBatchUpdateIPCommands(enabled, newIP, before);
+        const result = await writeDevice(device, before, expected, commands);
+        if (result.success) {
+          try {
+            await prisma.natRule.updateMany({
+              where: { id: { in: ruleIds }, deviceId },
+              data: { globalIp: newIP },
+            });
+          } catch (error) {
+            const message =
+              '设备配置已变更并核验，但本地缓存保存失败，请依据备份检查并重新获取设备规则。' +
+              (error instanceof Error ? error.message : String(error));
+            await logger.error('规则下发', message, { deviceId, backupId: result.backupId });
+            return {
+              ...result,
+              success: false,
+              status: 'partial',
+              message,
+              updated: 0,
+              localOnlyCount: rules.length - enabled.length,
+            };
+          }
+          try {
+            if (result.status === 'verified')
+              await notifier.notifyUpdateSuccess(device.name, enabled.length);
+          } catch (error) {
+            await logger.warning('规则通知', '配置已核验，但通知发送失败', {
+              deviceId,
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
+        }
+        return {
+          ...result,
+          updated: result.success ? rules.length : 0,
+          localOnlyCount: rules.length - enabled.length,
+        };
+      })
+  );
+
+  guardedHandle('rule:create', async (_event, deviceId: string, rule: RuleWritePayload) =>
+    sshManager.withDeviceOperation(deviceId, async () => {
+      assertRulePayload(rule);
+      const candidate = {
+        ...rule,
+        noReverse: rule.noReverse ?? false,
+        description: rule.description ?? undefined,
+      };
+      usgParser.assertWritableNatRule(candidate);
+      const others = await prisma.natRule.findMany({ where: { deviceId } });
+      assertNoNatEndpointConflicts([...others.map(toParsedRule), candidate], [candidate]);
+      const saved = await prisma.natRule.create({
+        data: { ...rule, noReverse: rule.noReverse ?? undefined, deviceId },
+      });
+      await logger.info('本地规则', '规则已保存为待下发配置', {
+        deviceId,
+        ruleName: saved.ruleName,
+      });
+      return saved;
+    })
+  );
+  guardedHandle('rule:update', async (_event, id: string, rule: RuleUpdatePayload) => {
+    assertRulePayload(rule);
+    const { deviceId } = await prisma.natRule.findUniqueOrThrow({ where: { id } });
+    return sshManager.withDeviceOperation(deviceId, async () => {
+      const existing = await prisma.natRule.findUniqueOrThrow({ where: { id } });
+      const candidate = toParsedRule({
+        ...existing,
+        ...rule,
+        noReverse: rule.noReverse ?? existing.noReverse,
+      });
+      usgParser.assertWritableNatRule(candidate);
+      const others = await prisma.natRule.findMany({ where: { deviceId, id: { not: id } } });
+      assertNoNatEndpointConflicts([...others.map(toParsedRule), candidate], [candidate]);
+      const saved = await prisma.natRule.update({
+        where: { id },
+        data: { ...rule, noReverse: rule.noReverse ?? undefined },
+      });
+      await logger.info('本地规则', '规则修改已保存为待下发配置', { ruleId: id });
+      return saved;
     });
   });
-
-  ipcMain.handle('rule:getTotalCount', async () => {
-    try {
-      const count = await prisma.natRule.count();
-      return count;
-    } catch (error: unknown) {
-      await logger.error('规则管理', '获取规则总数失败', { error: getErrorMessage(error) });
-      return 0;
-    }
+  guardedHandle('rule:delete', async (_event, id: string) => {
+    const existing = await prisma.natRule.findUniqueOrThrow({ where: { id } });
+    return sshManager.withDeviceOperation(existing.deviceId, async () => {
+      await prisma.natRule.delete({ where: { id } });
+      await logger.info('本地规则', '已从本地待下发配置删除；设备需确认同步后删除', { ruleId: id });
+    });
   });
-
-  ipcMain.handle('rule:syncFromDevice', async (event, deviceId: string) => {
-    let device: Device | null = null;
-    try {
-      device = await prisma.device.findUnique({ where: { id: deviceId } });
-      if (!device) {
-        throw new Error('设备不存在');
-      }
-
-      const credential = await credentialManager.getCredential(deviceId);
-      if (!credential) {
-        throw new Error('未配置凭据');
-      }
-
-      assertSupportedDeviceAccess(device, credential);
-
-      // 连接设备
-      const connectResult = await sshManager.connect(deviceId, {
-        host: device.host,
-        port: device.port,
-        username: credential.username || 'admin',
-        password: credential.password,
-        privateKey: credential.privateKey,
-      });
-
-      if (!connectResult.success) {
-        throw new Error(`连接失败: ${connectResult.message}`);
-      }
-
-      // 执行命令获取NAT规则
-      const command = 'display current-configuration | include nat server';
-      await logger.info('获取规则', `执行命令: ${command}`, { deviceName: device.name });
-
-      const result = await sshManager.executeCommand(deviceId, command);
-
-      if (!result.success) {
-        await sshManager.disconnect(deviceId);
-        await logger.error('获取规则', '命令执行失败', {
-          deviceName: device.name,
-          command,
-          exitCode: result.exitCode,
-          error: result.error,
-          output: result.output?.substring(0, 200), // 记录前200个字符
-        });
-        throw new Error(`命令执行失败: ${result.error || '未知错误'}`);
-      }
-
-      if (!result.output || result.output.trim() === '') {
-        await sshManager.disconnect(deviceId);
-        await logger.warning('获取规则', `设备 ${device.name} 未找到NAT规则`);
-        return [];
-      }
-
-      await logger.info('获取规则', '命令执行成功，开始解析规则', {
-        deviceName: device.name,
-        outputLength: result.output.length,
-      });
-
-      // 解析规则
-      const parsedRules = usgParser.parseNatServerList(result.output);
-
-      // 保存到数据库
-      const savedRules: NatRule[] = [];
-      for (const rule of parsedRules) {
-        // 先查找是否存在
-        const existing = await prisma.natRule.findFirst({
-          where: {
-            deviceId,
-            ruleName: rule.ruleName,
-          },
-        });
-
-        let saved;
-        if (existing) {
-          // 更新现有规则
-          saved = await prisma.natRule.update({
-            where: { id: existing.id },
-            data: {
-              protocol: rule.protocol,
-              globalIp: rule.globalIp,
-              globalPort: rule.globalPort,
-              insideIp: rule.insideIp,
-              insidePort: rule.insidePort,
-              enabled: rule.enabled,
-              description: rule.description,
-              noReverse: rule.noReverse || false,
-            },
-          });
-        } else {
-          // 创建新规则
-          saved = await prisma.natRule.create({
-            data: {
-              deviceId,
-              ruleName: rule.ruleName,
-              protocol: rule.protocol,
-              globalIp: rule.globalIp,
-              globalPort: rule.globalPort,
-              insideIp: rule.insideIp,
-              insidePort: rule.insidePort,
-              enabled: rule.enabled,
-              description: rule.description,
-              noReverse: rule.noReverse || false,
-            },
-          });
-        }
-        savedRules.push(saved);
-      }
-
-      await sshManager.disconnect(deviceId);
-      await logger.success('获取规则', `从设备 ${device.name} 获取了 ${savedRules.length} 条规则`);
-      return savedRules;
-    } catch (error: unknown) {
-      // 确保断开连接
-      try {
-        await sshManager.disconnect(deviceId);
-      } catch {
-        // 忽略断开连接的错误
-      }
-
-      const errorDetails = {
-        error: getErrorMessage(error),
-        deviceId,
-        deviceName: device?.name || 'unknown',
-        timestamp: new Date().toISOString(),
-      };
-
-      await logger.error('获取规则', '获取失败', errorDetails);
-
-      // 抛出更具体的错误
-      throw new Error(`获取规则失败: ${getErrorMessage(error)}`);
-    }
-  });
-
-  ipcMain.handle('rule:syncToDevice', async (event, deviceId: string) => {
-    let device: Device | null = null;
-    try {
-      device = await prisma.device.findUnique({ where: { id: deviceId } });
-      if (!device) {
-        throw new Error('设备不存在');
-      }
-
-      const credential = await credentialManager.getCredential(deviceId);
-      if (!credential) {
-        throw new Error('未配置凭据');
-      }
-
-      assertSupportedDeviceAccess(device, credential);
-
-      // 获取本地规则
-      const localRules = await prisma.natRule.findMany({
-        where: { deviceId },
-      });
-
-      if (localRules.length === 0) {
-        throw new Error('没有可同步的规则');
-      }
-
-      // 连接设备（只连接一次）
-      const connectResult = await sshManager.connect(deviceId, {
-        host: device.host,
-        port: device.port,
-        username: credential.username || 'admin',
-        password: credential.password,
-        privateKey: credential.privateKey,
-      });
-
-      if (!connectResult.success) {
-        await logger.error('同步规则', '初次连接失败', {
-          deviceName: device.name,
-          error: connectResult.message,
-        });
-        throw new Error(`连接失败: ${connectResult.message}`);
-      }
-
-      // 先获取设备上的现有规则（使用 executeCommand，会自动断开）
-      const queryCommand = 'display current-configuration | include nat server';
-      await logger.info('同步规则', `获取设备现有规则: ${queryCommand}`, {
-        deviceName: device.name,
-      });
-
-      const queryResult = await sshManager.executeCommand(deviceId, queryCommand);
-
-      let deviceRules: ParsedNatRule[] = [];
-      if (queryResult.success && queryResult.output && queryResult.output.trim() !== '') {
-        // 记录原始输出，用于调试
-        await logger.info('同步规则', '设备原始配置输出', {
-          deviceName: device.name,
-          rawOutput: queryResult.output,
-        });
-
-        deviceRules = usgParser.parseNatServerList(queryResult.output);
-        await logger.info('同步规则', `解析到 ${deviceRules.length} 条设备规则`, {
-          deviceName: device.name,
-          rules: deviceRules.map((r) => ({
-            name: r.ruleName,
-            global: `${r.globalIp}:${r.globalPort}`,
-          })),
-        });
-      }
-
-      // 生成同步命令
-      const parsedLocalRules = localRules.map((r) => ({
-        ruleName: r.ruleName,
-        protocol: r.protocol as ParsedNatRule['protocol'],
-        globalIp: r.globalIp,
-        globalPort: r.globalPort,
-        insideIp: r.insideIp,
-        insidePort: r.insidePort,
-        enabled: r.enabled,
-        description: r.description || undefined,
-        noReverse: r.noReverse || false,
-      }));
-
-      const commands = usgParser.generateSyncToDeviceCommands(deviceRules, parsedLocalRules);
-
-      // 如果没有变化，直接返回
-      if (commands.length === 0) {
-        await sshManager.disconnect(deviceId);
-        await logger.info('同步规则', `设备 ${device.name} 的规则已是最新，无需同步`);
-        return {
-          success: true,
-          syncedCount: 0,
-          message: '规则已是最新，无需同步',
-        };
-      }
-
-      await logger.info('同步规则', `开始增量同步规则到设备`, {
-        deviceName: device.name,
-        commandCount: commands.length,
-        totalLocalRules: localRules.length,
-      });
-
-      // 使用批量命令执行方法
-      const syncResult = await sshManager.executeBatchCommands(deviceId, commands);
-
-      await sshManager.disconnect(deviceId);
-
-      if (!syncResult.success) {
-        await logger.error('同步规则', '命令执行失败', {
-          deviceName: device.name,
-          error: syncResult.error,
-          output: syncResult.output?.substring(0, 500),
-        });
-        throw new Error(`命令执行失败: ${syncResult.error || '未知错误'}`);
-      }
-
-      await logger.success('同步规则', `成功增量同步规则到设备 ${device.name}`, {
-        output: syncResult.output?.substring(0, 200),
-        commandCount: commands.length,
-      });
-
-      return {
-        success: true,
-        syncedCount: localRules.length,
-        message: '增量同步成功',
-      };
-    } catch (error: unknown) {
-      // 确保断开连接
-      try {
-        await sshManager.disconnect(deviceId);
-      } catch {
-        // 忽略断开连接的错误
-      }
-
-      const errorDetails = {
-        error: getErrorMessage(error),
-        deviceId,
-        deviceName: device?.name || 'unknown',
-        timestamp: new Date().toISOString(),
-      };
-
-      await logger.error('同步规则', '同步到设备失败', errorDetails);
-
-      throw new Error(`同步到设备失败: ${getErrorMessage(error)}`);
-    }
-  });
-
-  ipcMain.handle(
-    'rule:batchUpdateIP',
-    async (event, deviceId: string, ruleIds: string[], newIP: string) => {
-      let device: Device | null = null;
-      try {
-        assertBatchUpdateIPInput({ deviceId, ruleIds, newIP });
-
-        device = await prisma.device.findUnique({ where: { id: deviceId } });
-        if (!device) {
-          throw new Error('设备不存在');
-        }
-
-        const rules = await prisma.natRule.findMany({
-          where: { id: { in: ruleIds } },
-        });
-
-        if (rules.length === 0) {
-          throw new Error('没有找到要更新的规则');
-        }
-
-        if (rules.length !== new Set(ruleIds).size) {
-          throw new Error('Some selected rules do not exist');
-        }
-
-        const outsideDeviceRuleIds = getRuleIdsOutsideDevice(rules, deviceId);
-        if (outsideDeviceRuleIds.length > 0) {
-          throw new Error(
-            `Selected rules do not belong to device ${deviceId}: ${outsideDeviceRuleIds.join(', ')}`
-          );
-        }
-
-        const credential = await credentialManager.getCredential(deviceId);
-        if (!credential) {
-          throw new Error('未配置凭据');
-        }
-
-        assertSupportedDeviceAccess(device, credential);
-
-        // 连接设备
-        const connectResult = await sshManager.connect(deviceId, {
-          host: device.host,
-          port: device.port,
-          username: credential.username || 'admin',
-          password: credential.password,
-          privateKey: credential.privateKey,
-        });
-
-        if (!connectResult.success) {
-          throw new Error(`连接失败: ${connectResult.message}`);
-        }
-
-        const queryCommand = 'display current-configuration | include nat server';
-        const queryResult = await sshManager.executeCommand(deviceId, queryCommand);
-        if (!queryResult.success) {
-          throw new Error(`未获取到设备当前NAT规则: ${queryResult.error || '查询失败'}`);
-        }
-
-        const deviceRules =
-          queryResult.success && queryResult.output?.trim()
-            ? usgParser.parseNatServerList(queryResult.output)
-            : [];
-
-        // 生成更新命令
-        const parsedRules = rules.map((r) => ({
-          ruleName: r.ruleName,
-          protocol: r.protocol as ParsedNatRule['protocol'],
-          globalIp: r.globalIp,
-          globalPort: r.globalPort,
-          insideIp: r.insideIp,
-          insidePort: r.insidePort,
-          enabled: r.enabled,
-          noReverse: r.noReverse || false,
-        }));
-
-        const commands = usgParser.generateBatchUpdateIPCommands(parsedRules, newIP, deviceRules);
-
-        await ensureSshConnected(deviceId, device, credential);
-
-        // 使用批量命令执行方法
-        const updateResult = await sshManager.executeBatchCommands(deviceId, commands);
-
-        if (!updateResult.success) {
-          await logger.error('批量更新', '命令执行失败', {
-            deviceName: device.name,
-            error: updateResult.error,
-            commandCount: commands.length,
-            output: updateResult.output?.substring(0, 1000),
-          });
-          throw new Error(`命令执行失败: ${updateResult.error || '未知错误'}`);
-        }
-
-        // 更新数据库
-        await prisma.natRule.updateMany({
-          where: { id: { in: ruleIds }, deviceId },
-          data: { globalIp: newIP },
-        });
-
-        await logger.success('批量更新', `更新了设备 ${device.name} 的 ${ruleIds.length} 条规则`);
-        await notifier.notifyUpdateSuccess(device.name, ruleIds.length);
-
-        return {
-          success: true,
-          updated: ruleIds.length,
-        };
-      } catch (error: unknown) {
-        await logger.error('批量更新', '更新失败', {
-          error: getErrorMessage(error),
-          deviceId,
-          deviceName: device?.name || 'unknown',
-        });
-        throw error;
-      } finally {
-        // 确保断开连接
-        try {
-          await sshManager.disconnect(deviceId);
-        } catch {
-          // 忽略断开连接的错误
-        }
-      }
-    }
-  );
-
-  ipcMain.handle('rule:create', async (event, deviceId: string, rule: RuleWritePayload) => {
-    try {
-      const newRule = await prisma.natRule.create({
-        data: {
-          ...rule,
-          noReverse: rule.noReverse ?? undefined,
-          deviceId,
-        },
-      });
-      await logger.success('Rule Management', `Rule created: ${rule.ruleName}`, {
-        deviceId,
-        protocol: rule.protocol,
-        globalIp: rule.globalIp,
-        globalPort: rule.globalPort,
-      });
-      return newRule;
-    } catch (error: unknown) {
-      await logger.error('Rule Management', 'Rule creation failed', {
-        deviceId,
-        ruleName: rule.ruleName,
-        error: getErrorMessage(error),
-      });
-      throw error;
-    }
-  });
-
-  ipcMain.handle('rule:update', async (event, id: string, rule: RuleUpdatePayload) => {
-    try {
-      const updatedRule = await prisma.natRule.update({
-        where: { id },
-        data: {
-          ...rule,
-          noReverse: rule.noReverse ?? undefined,
-        },
-      });
-      await logger.success('Rule Management', `Rule updated: ${rule.ruleName || ''}`, {
-        ruleId: id,
-        updates: rule,
-      });
-      return updatedRule;
-    } catch (error: unknown) {
-      await logger.error('Rule Management', 'Rule update failed', {
-        ruleId: id,
-        error: getErrorMessage(error),
-      });
-      throw error;
-    }
-  });
-
-  ipcMain.handle('rule:delete', async (event, id: string) => {
-    try {
-      await prisma.natRule.delete({
-        where: { id },
-      });
-      await logger.info('规则管理', '规则删除成功', { ruleId: id });
-    } catch (error: unknown) {
-      await logger.error('规则管理', '规则删除失败', { ruleId: id, error: getErrorMessage(error) });
-      throw error;
-    }
-  });
-
-  ipcMain.handle(
+  guardedHandle(
     'rule:batchUpdate',
-    async (event, ruleIds: string[], updates: Prisma.NatRuleUpdateManyMutationInput) => {
-      try {
-        await prisma.natRule.updateMany({
-          where: { id: { in: ruleIds } },
-          data: updates,
-        });
-        await logger.success('Rule Management', `Batch updated ${ruleIds.length} rules`, {
-          ruleIds,
-          updates,
-        });
-        return { success: true, count: ruleIds.length };
-      } catch (error: unknown) {
-        await logger.error('Rule Management', 'Batch update failed', {
-          error: getErrorMessage(error),
-          ruleIds,
-        });
-        throw error;
-      }
+    async (_event, ruleIds: string[], updates: Prisma.NatRuleUpdateManyMutationInput) => {
+      if (Object.keys(updates).some((key) => !['enabled', 'description'].includes(key)))
+        throw new Error('批量本地修改仅支持启停与描述');
+      const rows = await prisma.natRule.findMany({ where: { id: { in: ruleIds } } });
+      if (
+        !rows.length ||
+        rows.length !== new Set(ruleIds).size ||
+        new Set(rows.map((rule) => rule.deviceId)).size !== 1
+      )
+        throw new Error('请选择同一设备的有效规则');
+      return sshManager.withDeviceOperation(rows[0].deviceId, async () => {
+        await prisma.natRule.updateMany({ where: { id: { in: ruleIds } }, data: updates });
+        await logger.info('本地规则', '批量修改已保存为待下发配置', { count: rows.length });
+        return { success: true, count: rows.length };
+      });
     }
   );
-
-  // 监控管理
 }

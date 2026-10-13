@@ -66,6 +66,7 @@ class EmailService {
    * 配置SMTP
    */
   configure(config: SMTPConfig) {
+    this.transporter?.close();
     this.config = {
       ...config,
       notifyTypes: normalizeNotifyTypes(config.notifyTypes),
@@ -76,6 +77,12 @@ class EmailService {
     } else {
       this.transporter = null;
     }
+  }
+
+  clearConfiguration(): void {
+    this.transporter?.close();
+    this.transporter = null;
+    this.config = null;
   }
 
   /**
@@ -156,6 +163,7 @@ class EmailService {
       throw new Error(validationError);
     }
 
+    let transporter: nodemailer.Transporter | null = null;
     try {
       await logger.info('邮件服务', '开始发送测试邮件', {
         host: config.host,
@@ -166,7 +174,7 @@ class EmailService {
       });
 
       // 创建临时的邮件传输器
-      const transporter = nodemailer.createTransport(createTestTransportConfig(config));
+      transporter = nodemailer.createTransport(createTestTransportConfig(config));
 
       // 验证连接
       await logger.info('邮件服务', '验证 SMTP 连接...');
@@ -316,6 +324,8 @@ class EmailService {
       }
 
       throw new Error(friendlyError);
+    } finally {
+      transporter?.close();
     }
   }
 
@@ -530,8 +540,9 @@ class EmailService {
    * 验证配置
    */
   async verifyConfig(config: SMTPConfig): Promise<boolean> {
+    let transporter: nodemailer.Transporter | null = null;
     try {
-      const transporter = nodemailer.createTransport(createBaseTransportConfig(config));
+      transporter = nodemailer.createTransport(createBaseTransportConfig(config));
 
       await transporter.verify();
       return true;
@@ -539,6 +550,8 @@ class EmailService {
       const { message } = getEmailErrorInfo(error);
       await logger.error('邮件服务', 'SMTP配置验证失败', { error: message });
       return false;
+    } finally {
+      transporter?.close();
     }
   }
 }

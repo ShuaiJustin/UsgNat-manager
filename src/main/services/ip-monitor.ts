@@ -11,7 +11,7 @@ import {
   getIPSourceDiagnosticLogOptions,
   getSourceFailureLogLevel,
   hasReachedIPConsensus,
-  isValidIPv4,
+  isGlobalUnicastIPv4,
   recordIPChangeCandidate,
   redactURLCredentials,
   selectConsensusIP,
@@ -67,6 +67,11 @@ const getErrorDetails = (error: unknown) => {
 export class IPMonitor extends EventEmitter {
   private currentIP = '';
   private previousIP = '';
+  private lastSuccessfulCheck: Date | null = null;
+  private lastConfirmedCheck: Date | null = null;
+  private lastSampleIP = '';
+  private observationGeneration = 0;
+  private checkTask: Promise<string> | null = null;
   // eslint-disable-next-line no-undef
   private timer: NodeJS.Timeout | null = null;
   private isRunning = false;
@@ -159,22 +164,33 @@ export class IPMonitor extends EventEmitter {
     }
 
     this.isRunning = false;
+    this.observationGeneration += 1;
     this.changeConfirmations.clear();
     this.emit('stopped');
   }
 
-  async checkIP(): Promise<string> {
+  checkIP(): Promise<string> {
+    if (this.checkTask) return this.checkTask;
+    const generation = this.observationGeneration;
+    const task = this.performCheck(generation).finally(() => {
+      if (this.checkTask === task) this.checkTask = null;
+    });
+    this.checkTask = task;
+    return task;
+  }
+
+  private async performCheck(generation: number): Promise<string> {
     try {
       const ip = await this.fetchCurrentIP();
-
-      if (!ip) {
-        this.emit('error', new Error('无法获取公网IP'));
-        return this.currentIP;
-      }
+      if (generation !== this.observationGeneration) throw new Error('IP检测已取消或检测源已变化');
+      if (!ip) throw new Error('无法获取公网IP');
+      this.lastSuccessfulCheck = new Date();
+      this.lastSampleIP = ip;
 
       if (!this.currentIP) {
         this.currentIP = ip;
         this.previousIP = ip;
+        this.lastConfirmedCheck = this.lastSuccessfulCheck;
         this.emit('initialized', ip);
         return ip;
       }
@@ -183,13 +199,14 @@ export class IPMonitor extends EventEmitter {
         await this.handleIPChange(ip);
       } else {
         this.changeConfirmations.clear();
-        this.emit('checked', { ip, changed: false });
+        this.lastConfirmedCheck = this.lastSuccessfulCheck;
+        this.emit('checked', { ip, changed: false, timestamp: this.lastSuccessfulCheck });
       }
 
-      return ip;
-    } catch (error) {
-      this.emit('error', error);
       return this.currentIP;
+    } catch (error) {
+      if (generation === this.observationGeneration) this.emit('error', error);
+      throw error;
     }
   }
 
@@ -212,6 +229,7 @@ export class IPMonitor extends EventEmitter {
       this.previousIP = this.currentIP;
       this.currentIP = newIP;
       this.changeConfirmations.clear();
+      this.lastConfirmedCheck = this.lastSuccessfulCheck;
 
       const event: IPChangeEvent = {
         oldIP: this.previousIP,
@@ -240,7 +258,7 @@ export class IPMonitor extends EventEmitter {
     for (const source of activeSources) {
       try {
         const ip = await this.fetchIPFromSource(source);
-        if (ip && isValidIPv4(ip)) {
+        if (ip && isGlobalUnicastIPv4(ip)) {
           results.push(ip);
           if (hasReachedIPConsensus(results, requiredConsensus)) {
             return selectConsensusIP(results, requiredConsensus);
@@ -333,6 +351,25 @@ export class IPMonitor extends EventEmitter {
     return this.currentIP;
   }
 
+  getLastSuccessfulCheck(): Date | null {
+    return this.lastSuccessfulCheck ? new Date(this.lastSuccessfulCheck) : null;
+  }
+
+  getLastConfirmedCheck(): Date | null {
+    return this.lastConfirmedCheck ? new Date(this.lastConfirmedCheck) : null;
+  }
+
+  async refreshConfirmedIP(): Promise<string> {
+    const generation = this.observationGeneration;
+    // Refresh waits for the configured consecutive source-consensus samples; never return a candidate or stale fallback.
+    for (let attempt = 0; attempt < this.config.confirmCount; attempt += 1) {
+      await this.checkIP();
+      if (generation !== this.observationGeneration) throw new Error('IP检测已取消');
+      if (this.lastSampleIP === this.currentIP && this.lastConfirmedCheck) return this.currentIP;
+    }
+    throw new Error('最新公网IP尚未连续确认，已阻止写入');
+  }
+
   getPreviousIP(): string {
     return this.previousIP;
   }
@@ -342,13 +379,39 @@ export class IPMonitor extends EventEmitter {
   }
 
   updateConfig(config: Partial<IPMonitorConfig>): void {
+    if (
+      config.confirmCount !== undefined &&
+      (!Number.isInteger(config.confirmCount) ||
+        config.confirmCount < 1 ||
+        config.confirmCount > 10)
+    )
+      throw new Error('IP确认次数必须是1至10的整数');
+    if (
+      config.checkInterval !== undefined &&
+      (!Number.isFinite(config.checkInterval) || config.checkInterval < 0.1)
+    )
+      throw new Error('IP检测间隔无效');
+    const previousInterval = this.config.checkInterval;
     const nextConfig = { ...this.config, ...config };
     if (config.sources !== undefined) {
       nextConfig.sources = normalizeIPCheckSources(config.sources);
+      if (nextConfig.sources.join('|') !== this.config.sources.join('|')) {
+        this.observationGeneration += 1;
+        this.currentIP = '';
+        this.previousIP = '';
+        this.lastSampleIP = '';
+        this.lastSuccessfulCheck = null;
+        this.lastConfirmedCheck = null;
+        this.changeConfirmations.clear();
+      }
     }
     this.config = nextConfig;
 
-    if (this.isRunning && config.checkInterval) {
+    if (
+      this.isRunning &&
+      config.checkInterval !== undefined &&
+      config.checkInterval !== previousInterval
+    ) {
       this.stop();
       void this.start();
     }

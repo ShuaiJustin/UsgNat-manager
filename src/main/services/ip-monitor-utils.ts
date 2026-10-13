@@ -1,24 +1,51 @@
-export const extractIPv4 = (text: string): string => {
-  const match = text.match(/(\d{1,3}\.){3}\d{1,3}/);
-  return match ? match[0] : text.trim();
+const IPV4_PATTERN = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/;
+// Candidates must not be part of a longer dotted/numeric token (e.g. 1.2.3.4567).
+const IPV4_CANDIDATE_PATTERN = /(?<![\d.])\d{1,3}(?:\.\d{1,3}){3}(?!\.?\d)/g;
+
+const parseIPv4Octets = (ip: string): number[] | null => {
+  const match = ip.match(IPV4_PATTERN);
+  if (!match) return null;
+  const parts = match.slice(1, 5);
+  // Leading-zero octets are ambiguous (octal in some parsers) and are rejected.
+  if (parts.some((part) => part.length > 1 && part.startsWith('0'))) return null;
+  const octets = parts.map(Number);
+  return octets.every((octet) => octet <= 255) ? octets : null;
 };
 
-export const isValidIPv4 = (ip: string): boolean => {
-  const ipPattern = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/;
-  const match = ip.match(ipPattern);
+export const isValidIPv4 = (ip: string): boolean => parseIPv4Octets(ip) !== null;
 
-  if (!match) {
-    return false;
+// [network, prefixLength] ranges that are never a usable public egress address.
+const NON_GLOBAL_IPV4_RANGES: ReadonlyArray<readonly [number, number]> = [
+  [0x00000000, 8], // 0.0.0.0/8
+  [0x0a000000, 8], // 10.0.0.0/8
+  [0x64400000, 10], // 100.64.0.0/10 CGNAT
+  [0x7f000000, 8], // 127.0.0.0/8
+  [0xa9fe0000, 16], // 169.254.0.0/16
+  [0xac100000, 12], // 172.16.0.0/12
+  [0xc0000000, 24], // 192.0.0.0/24
+  [0xc0a80000, 16], // 192.168.0.0/16
+  [0xc6120000, 15], // 198.18.0.0/15
+  [0xe0000000, 4], // 224.0.0.0/4 multicast
+  [0xf0000000, 4], // 240.0.0.0/4 reserved, includes 255.255.255.255
+];
+
+/** Accepts only syntactically canonical, globally routable unicast IPv4 addresses. */
+export const isGlobalUnicastIPv4 = (ip: string): boolean => {
+  const octets = parseIPv4Octets(ip);
+  if (!octets) return false;
+  const value = ((octets[0] << 24) | (octets[1] << 16) | (octets[2] << 8) | octets[3]) >>> 0;
+  return !NON_GLOBAL_IPV4_RANGES.some(([network, prefix]) => {
+    const mask = (0xffffffff << (32 - prefix)) >>> 0;
+    return (value & mask) >>> 0 === network;
+  });
+};
+
+/** Returns the first standalone, canonical IPv4 in text; falls back to the trimmed text. */
+export const extractIPv4 = (text: string): string => {
+  for (const [candidate] of text.matchAll(IPV4_CANDIDATE_PATTERN)) {
+    if (isValidIPv4(candidate)) return candidate;
   }
-
-  for (let i = 1; i <= 4; i++) {
-    const num = parseInt(match[i], 10);
-    if (num < 0 || num > 255) {
-      return false;
-    }
-  }
-
-  return true;
+  return text.trim();
 };
 
 export const selectMostCommonIP = (ips: readonly string[]): string => {

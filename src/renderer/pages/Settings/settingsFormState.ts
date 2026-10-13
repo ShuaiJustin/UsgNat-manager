@@ -5,11 +5,11 @@ export const DEFAULT_SETTINGS_FORM_VALUES: SettingsFormValues = {
   language: 'zh-CN',
   autoStart: true,
   logRetentionDays: 30,
-  useWindowsCredentials: true,
+  useWindowsCredentials: false,
   encryptSensitiveData: true,
   requirePasswordOnStartup: false,
   logAllOperations: true,
-  writeToWindowsEventLog: true,
+  writeToWindowsEventLog: false,
 };
 
 export const buildSettingsFormSnapshot = (
@@ -19,4 +19,9 @@ export const buildSettingsFormSnapshot = (
   ...DEFAULT_SETTINGS_FORM_VALUES,
   ...appConfig,
   autoStart,
+  useWindowsCredentials: false,
+  encryptSensitiveData: true,
+  requirePasswordOnStartup: false,
+  logAllOperations: true,
+  writeToWindowsEventLog: false,
 });

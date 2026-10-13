@@ -20,6 +20,7 @@ export interface Credential {
   password?: string;
   secretRef?: string;
   privateKey?: string;
+  passphrase?: string;
   certificate?: string;
   mfaType?: 'TOTP' | 'SMS' | 'Email' | 'Hardware';
   createdAt: Date;
@@ -30,4 +31,10 @@ export interface ConnectionTestResult {
   success: boolean;
   latency: number;
   message: string;
+  hostKey?: {
+    fingerprint: string;
+    host: string;
+    port: number;
+    changed: boolean;
+  };
 }

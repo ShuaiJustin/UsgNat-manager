@@ -39,7 +39,7 @@ const RuleModal: React.FC<RuleModalProps> = ({ open, rule, deviceId, onClose, on
   const createMutation = useMutation({
     mutationFn: (values: RuleDraft) => window.electronAPI.rule.create(deviceId, values),
     onSuccess: () => {
-      message.success('规则创建成功');
+      message.success('规则已保存为本地待下发配置；请预览并确认同步到设备');
       onSuccess();
       onClose();
     },
@@ -51,7 +51,7 @@ const RuleModal: React.FC<RuleModalProps> = ({ open, rule, deviceId, onClose, on
   const updateMutation = useMutation({
     mutationFn: ({ id, values }: RuleUpdatePayload) => window.electronAPI.rule.update(id, values),
     onSuccess: () => {
-      message.success('规则更新成功');
+      message.success('修改已保存为本地待下发配置；请预览并确认同步到设备');
       onSuccess();
       onClose();
     },

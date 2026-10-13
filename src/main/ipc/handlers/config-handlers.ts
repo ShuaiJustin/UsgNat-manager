@@ -1,27 +1,42 @@
 import { ipcMain } from 'electron';
 
 import { backupService } from '../../services/backup-service';
-import { type ConfigType, configService } from '../../services/config-service';
+import { configService } from '../../services/config-service';
+import { assertConfigType, type ConfigType } from '../../services/config-service-helpers';
 import { customUpdater } from '../../services/custom-updater';
 import { type SMTPConfig, emailService } from '../../services/email-service';
 import { logger } from '../../services/logger';
 import { notifier } from '../../services/notifier';
+import { mandatoryUpdateBusinessGate } from '../../services/mandatory-update-business-gate';
 import { getErrorMessage } from './shared';
-
-const DEFAULT_NOTIFY_TYPES = ['ipChange', 'updateSuccess', 'updateFailed', 'deviceOffline'];
 
 type ConfigPayload = Record<string, unknown>;
 
-export function registerConfigHandlers() {
-  ipcMain.handle('email:configure', async (_event, config: SMTPConfig) => {
-    try {
-      emailService.configure(config);
-      await configService.saveConfig('email', config);
+export interface ConfigHandlerLifecycle {
+  aroundDataChange?: <T>(
+    reason: 'import' | 'reset' | 'restore',
+    action: () => Promise<T>
+  ) => Promise<T>;
+  afterConfigChange?: (type: ConfigType | 'all') => Promise<void>;
+}
 
-      notifier.updateConfig({
-        emailNotifyEnabled: config.enabled || false,
-        notifyTypes: config.notifyTypes || DEFAULT_NOTIFY_TYPES,
-      });
+export function registerConfigHandlers(lifecycle: ConfigHandlerLifecycle = {}) {
+  const aroundDataChange =
+    lifecycle.aroundDataChange ??
+    (async <T>(_reason: string, action: () => Promise<T>) => action());
+  ipcMain.handle('email:configure', async (_event, config: SMTPConfig) => {
+    const release = mandatoryUpdateBusinessGate.tryEnter();
+    if (!release) return { success: false, error: '业务操作暂时停止，请稍后重试' };
+    try {
+      await configService.saveConfig('email', config);
+      if (lifecycle.afterConfigChange) {
+        await lifecycle.afterConfigChange('email');
+      } else {
+        emailService.configure(config);
+        notifier.updateConfig({
+          emailNotifyEnabled: config.enabled || false,
+        });
+      }
 
       await logger.info('邮件服务', '邮件配置已保存');
       return { success: true };
@@ -29,6 +44,8 @@ export function registerConfigHandlers() {
       const errorMessage = getErrorMessage(error, '邮件配置保存失败');
       await logger.error('邮件服务', '配置失败', { error: errorMessage });
       return { success: false, error: errorMessage };
+    } finally {
+      release();
     }
   });
 
@@ -66,11 +83,15 @@ export function registerConfigHandlers() {
     }
   });
 
-  ipcMain.handle('config:save', async (_event, type: ConfigType, data: ConfigPayload) => {
+  ipcMain.handle('config:save', async (_event, type: unknown, data: ConfigPayload) => {
+    const release = mandatoryUpdateBusinessGate.tryEnter();
+    if (!release) return { success: false, error: '业务操作暂时停止，请稍后重试' };
     try {
+      assertConfigType(type);
       await configService.saveConfig(type, data);
-
-      if (type === 'update') {
+      if (lifecycle.afterConfigChange) {
+        await lifecycle.afterConfigChange(type);
+      } else if (type === 'update') {
         await customUpdater.startPeriodicCheck();
       }
 
@@ -79,11 +100,14 @@ export function registerConfigHandlers() {
       const errorMessage = getErrorMessage(error, '保存配置失败');
       await logger.error('配置服务', '保存配置失败', { error: errorMessage, type });
       return { success: false, error: errorMessage };
+    } finally {
+      release();
     }
   });
 
-  ipcMain.handle('config:get', async (_event, type: ConfigType) => {
+  ipcMain.handle('config:get', async (_event, type: unknown) => {
     try {
+      assertConfigType(type);
       return await configService.getConfig(type);
     } catch (error) {
       await logger.error('配置服务', '获取配置失败', {
@@ -105,9 +129,9 @@ export function registerConfigHandlers() {
     }
   });
 
-  ipcMain.handle('config:export', async (_event, filePath?: string) => {
+  ipcMain.handle('config:export', async () => {
     try {
-      const exportedPath = await configService.exportConfig(filePath);
+      const exportedPath = await configService.exportConfig();
       return { success: true, path: exportedPath };
     } catch (error) {
       const errorMessage = getErrorMessage(error, '导出配置失败');
@@ -118,7 +142,10 @@ export function registerConfigHandlers() {
 
   ipcMain.handle('config:import', async (_event, filePath: string) => {
     try {
-      await configService.importConfig(filePath);
+      await aroundDataChange('import', async () => {
+        await configService.importConfig(filePath);
+        await lifecycle.afterConfigChange?.('all');
+      });
       return { success: true };
     } catch (error) {
       const errorMessage = getErrorMessage(error, '导入配置失败');
@@ -129,7 +156,12 @@ export function registerConfigHandlers() {
 
   ipcMain.handle('config:reset', async () => {
     try {
-      await configService.resetAllConfigs();
+      await aroundDataChange('reset', async () => {
+        // A reset can erase the configuration required to interpret existing rules.
+        await backupService.createBackup('重置配置前自动备份');
+        await configService.resetAllConfigs();
+        await lifecycle.afterConfigChange?.('all');
+      });
       return { success: true };
     } catch (error) {
       const errorMessage = getErrorMessage(error, '重置配置失败');
@@ -150,7 +182,11 @@ export function registerConfigHandlers() {
 
   ipcMain.handle('backup:restore', async (_event, filePath: string) => {
     try {
-      await backupService.restoreBackup(filePath);
+      await aroundDataChange('restore', async () => {
+        await backupService.createBackup('恢复前自动备份');
+        await backupService.restoreBackup(filePath);
+        await lifecycle.afterConfigChange?.('all');
+      });
       return { success: true };
     } catch (error) {
       const errorMessage = getErrorMessage(error, '恢复备份失败');

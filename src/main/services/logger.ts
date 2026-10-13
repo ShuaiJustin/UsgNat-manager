@@ -1,12 +1,14 @@
-import { type Log as PrismaLog, Prisma } from '@prisma/client';
+import { type Log as PrismaLog } from '@prisma/client';
 import { app } from 'electron';
 import path from 'path';
 import winston from 'winston';
 
 import { createLogCleanupPlan } from '../log-cleanup';
+import { isDevMode } from '../runtime-mode';
 import { prisma } from './prisma-client';
+import { buildLogQuery, escapeCsvCell, type LogQueryFilter, type LogLevel } from './log-query';
 
-export type LogLevel = 'INFO' | 'SUCCESS' | 'WARNING' | 'ERROR';
+export type { LogLevel, LogQueryFilter } from './log-query';
 
 export type LogDetails = unknown;
 
@@ -18,23 +20,9 @@ export interface LogEntry {
   timestamp?: Date;
 }
 
-export interface LogQueryFilter {
-  level?: LogLevel;
-  operation?: string;
-  startDate?: Date;
-  endDate?: Date;
-  limit?: number;
-  orderBy?: 'asc' | 'desc';
-}
-
 interface LogWriteOptions {
   persistToDatabase?: boolean;
 }
-
-const escapeCsvCell = (value: unknown): string => {
-  const normalizedValue = String(value ?? '').replace(/"/g, '""');
-  return `"${normalizedValue}"`;
-};
 
 class Logger {
   private winstonLogger: winston.Logger;
@@ -66,7 +54,7 @@ class Logger {
       ],
     });
 
-    if (process.env.NODE_ENV === 'development') {
+    if (isDevMode()) {
       this.winstonLogger.add(
         new winston.transports.Console({
           format: winston.format.combine(winston.format.colorize(), winston.format.simple()),
@@ -153,37 +141,22 @@ class Logger {
   }
 
   async query(filter?: LogQueryFilter): Promise<PrismaLog[]> {
-    const where: Prisma.LogWhereInput = {};
-
-    if (filter?.level) {
-      where.level = filter.level;
-    }
-
-    if (filter?.operation) {
-      where.operation = {
-        contains: filter.operation,
-      };
-    }
-
-    if (filter?.startDate || filter?.endDate) {
-      const createdAt: Prisma.DateTimeFilter = {};
-
-      if (filter.startDate) {
-        createdAt.gte = filter.startDate;
-      }
-
-      if (filter.endDate) {
-        createdAt.lte = filter.endDate;
-      }
-
-      where.createdAt = createdAt;
-    }
-
     return prisma.log.findMany({
-      where,
-      orderBy: { createdAt: filter?.orderBy ?? 'desc' },
-      take: filter?.limit ?? 100,
+      ...buildLogQuery(filter),
+      orderBy: [{ createdAt: filter?.orderBy === 'asc' ? 'asc' : 'desc' }, { id: 'desc' }],
     });
+  }
+
+  async queryPage(filter?: LogQueryFilter): Promise<{ rows: PrismaLog[]; total: number }> {
+    const query = buildLogQuery(filter);
+    const [rows, total] = await prisma.$transaction([
+      prisma.log.findMany({
+        ...query,
+        orderBy: [{ createdAt: filter?.orderBy === 'asc' ? 'asc' : 'desc' }, { id: 'desc' }],
+      }),
+      prisma.log.count({ where: query.where }),
+    ]);
+    return { rows, total };
   }
 
   async cleanup(daysToKeep = 30): Promise<number> {
@@ -216,7 +189,18 @@ class Logger {
   }
 
   async export(filter?: LogQueryFilter): Promise<string> {
-    const logs = await this.query({ ...filter, limit: 10000 });
+    const options = buildLogQuery({ ...filter, offset: 0, limit: 10000 });
+    const logs = await prisma.$transaction(async (tx) => {
+      const count = await tx.log.count({ where: options.where });
+      if (count > 10000)
+        throw new Error(
+          `筛选结果有 ${count} 条日志，超过单次导出上限 10000 条；请缩小日期或搜索范围`
+        );
+      return tx.log.findMany({
+        ...options,
+        orderBy: { createdAt: filter?.orderBy === 'asc' ? 'asc' : 'desc' },
+      });
+    });
 
     const headers = ['时间', '级别', '操作', '消息', '详情'];
     const rows = logs.map((log) => [

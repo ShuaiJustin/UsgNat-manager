@@ -22,7 +22,9 @@ type BaseTransportConfig = {
   port: number;
   secure: boolean;
   requireTLS?: boolean;
-  ignoreTLS?: boolean;
+  connectionTimeout: number;
+  greetingTimeout: number;
+  socketTimeout: number;
   auth: {
     user: string;
     pass: string;
@@ -30,9 +32,6 @@ type BaseTransportConfig = {
 };
 
 type TestTransportConfig = BaseTransportConfig & {
-  connectionTimeout: number;
-  greetingTimeout: number;
-  socketTimeout: number;
   logger: false;
   debug: false;
 };
@@ -94,8 +93,14 @@ export const createBaseTransportConfig = (config: SMTPConfigLike): BaseTransport
   host: config.host,
   port: config.port,
   secure: config.secure,
-  ...(config.requireTLS ? { requireTLS: true } : {}),
-  ...(config.ignoreTLS ? { ignoreTLS: true } : {}),
+  // Without implicit TLS, STARTTLS is mandatory unless the user explicitly chose the unencrypted
+  // mode (stored as ignoreTLS). That mode only drops the requirement: nodemailer's ignoreTLS is
+  // never forwarded, so a server offering STARTTLS is still upgraded opportunistically.
+  ...(!config.secure && !config.ignoreTLS ? { requireTLS: true } : {}),
+  // Bounded waits keep a stalled SMTP server from hanging notification delivery indefinitely.
+  connectionTimeout: 15000,
+  greetingTimeout: 15000,
+  socketTimeout: 30000,
   auth: {
     user: config.auth.user,
     pass: config.auth.pass,

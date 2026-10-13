@@ -7,8 +7,16 @@ export interface ManualConfirmationRequest {
   expiresAt: number;
 }
 
+/** Why a request ended without an explicit user answer; absent means the user answered. */
+export type ManualConfirmationEndReason = 'timeout' | 'cancelled';
+
+export type ManualConfirmationResolver = (
+  confirmed: boolean,
+  reason?: ManualConfirmationEndReason
+) => void;
+
 interface PendingManualConfirmation extends ManualConfirmationRequest {
-  resolve: (confirmed: boolean) => void;
+  resolve: ManualConfirmationResolver;
   timeout: ReturnType<typeof setTimeout>;
 }
 
@@ -24,7 +32,7 @@ export class ManualConfirmationManager {
 
   start(
     options: StartManualConfirmationOptions,
-    resolve: (confirmed: boolean) => void
+    resolve: ManualConfirmationResolver
   ): ManualConfirmationRequest {
     this.clear(false);
 
@@ -41,7 +49,8 @@ export class ManualConfirmationManager {
         return;
       }
 
-      this.pending.resolve(false);
+      // A timeout is not a rejection: automation keeps the target pending and asks again later.
+      this.pending.resolve(false, 'timeout');
       this.pending = null;
       options.onExpired?.(request);
     }, timeoutMs);
@@ -88,7 +97,7 @@ export class ManualConfirmationManager {
     clearTimeout(this.pending.timeout);
     const { resolve } = this.pending;
     this.pending = null;
-    resolve(confirmed);
+    resolve(confirmed, confirmed ? undefined : 'cancelled');
     return true;
   }
 }

@@ -13,11 +13,6 @@ const AutomationConfirmDialog: React.FC = () => {
   const activeDialogRef = useRef<{ destroy: () => void } | null>(null);
   const expiryTimerRef = useRef<number | null>(null);
 
-  const shouldDeferToAutomationPage = useCallback(
-    () => window.location.hash.includes('/automation'),
-    []
-  );
-
   const clearActiveDialog = useCallback(() => {
     if (expiryTimerRef.current !== null) {
       window.clearTimeout(expiryTimerRef.current);
@@ -49,10 +44,6 @@ const AutomationConfirmDialog: React.FC = () => {
 
   const openConfirmDialog = useCallback(
     (request: AutomationConfirmRequest) => {
-      if (shouldDeferToAutomationPage()) {
-        return;
-      }
-
       if (activeRequestIdRef.current === request.requestId) {
         return;
       }
@@ -122,7 +113,7 @@ const AutomationConfirmDialog: React.FC = () => {
         },
       });
     },
-    [clearActiveDialog, message, modal, respondToRequest, shouldDeferToAutomationPage]
+    [clearActiveDialog, message, modal, respondToRequest]
   );
 
   useEffect(() => {
@@ -134,8 +125,12 @@ const AutomationConfirmDialog: React.FC = () => {
     const handleConfirmRequest = (request: AutomationConfirmRequest) => {
       openConfirmDialog(request);
     };
+    const handleConfirmCancelled = () => {
+      clearActiveDialog();
+    };
 
     api.automation.onConfirmRequest(handleConfirmRequest);
+    api.automation.onConfirmCancelled?.(handleConfirmCancelled);
 
     if (api.automation.getPendingConfirm) {
       void api.automation.getPendingConfirm().then((request) => {
@@ -147,20 +142,10 @@ const AutomationConfirmDialog: React.FC = () => {
 
     return () => {
       api.automation.removeConfirmRequestListener?.(handleConfirmRequest);
+      api.automation.removeConfirmCancelledListener?.(handleConfirmCancelled);
       clearActiveDialog();
     };
   }, [clearActiveDialog, openConfirmDialog]);
-
-  useEffect(() => {
-    const handleHashChange = () => {
-      if (shouldDeferToAutomationPage()) {
-        clearActiveDialog();
-      }
-    };
-
-    window.addEventListener('hashchange', handleHashChange);
-    return () => window.removeEventListener('hashchange', handleHashChange);
-  }, [clearActiveDialog, shouldDeferToAutomationPage]);
 
   return null;
 };

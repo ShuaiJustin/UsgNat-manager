@@ -5,6 +5,7 @@ import type { SettingsTranslation } from './types';
 
 interface SettingsGeneralTabProps {
   t: SettingsTranslation;
+  monitorRunning?: boolean;
   onPauseService: () => void;
   onRestartService: () => void;
   onViewServiceLog: () => void;
@@ -12,19 +13,30 @@ interface SettingsGeneralTabProps {
 
 const SettingsGeneralTab: React.FC<SettingsGeneralTabProps> = ({
   t,
+  monitorRunning,
   onPauseService,
   onRestartService,
   onViewServiceLog,
 }) => (
   <>
-    <Card title={t('settings.windowsService')} style={{ marginBottom: 24 }}>
-      <Form.Item label={t('settings.serviceStatus')}>
-        <Badge status="processing" text={t('settings.running')} />
+    <Card title="应用内监控" style={{ marginBottom: 24 }}>
+      <p>应用运行期间检测公网 IP。暂停或重启会控制应用内监控和自动化任务。</p>
+      <Form.Item label="监控状态">
+        <Badge
+          status={monitorRunning === true ? 'processing' : 'default'}
+          text={
+            monitorRunning === undefined
+              ? '状态未知'
+              : monitorRunning
+                ? t('settings.running')
+                : '已停止'
+          }
+        />
       </Form.Item>
 
       <Space style={{ marginBottom: 15 }}>
-        <Button onClick={onPauseService}>{t('settings.pauseService')}</Button>
-        <Button onClick={onRestartService}>{t('settings.restartService')}</Button>
+        <Button onClick={onPauseService}>暂停监控</Button>
+        <Button onClick={onRestartService}>重启监控</Button>
       </Space>
 
       <Form.Item label={t('settings.autoStart')} name="autoStart" valuePropName="checked">

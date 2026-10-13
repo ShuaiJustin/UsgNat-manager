@@ -35,3 +35,9 @@ test('uses IPv4 extraction parsers for verbose domestic sources', () => {
   assert.equal(pconline?.parser('{"ip":"98.76.54.32","city":"上海"}'), '98.76.54.32');
   assert.equal(cip?.parser('IP\t: 98.76.54.32\n地址\t: 浙江'), '98.76.54.32');
 });
+
+test('verbose source parsers do not truncate longer numeric tokens', () => {
+  const ipip = createIPCheckSources().get('ipip');
+  assert.equal(ipip?.parser('当前 IP：1.2.3.4567'), '当前 IP：1.2.3.4567');
+  assert.equal(ipip?.parser('v1.2.3.4.5 IP：98.76.54.32。'), '98.76.54.32');
+});

@@ -1,3 +1,56 @@
+import { createHash, timingSafeEqual } from 'node:crypto';
+import { Buffer } from 'node:buffer';
+
+export const createHostKeyVerifier =
+  (
+    trustedFingerprint?: string,
+    onObserved?: (fingerprint: string) => void
+  ): ((key: Buffer) => boolean) =>
+  (key) => {
+    const fingerprint = `SHA256:${createHash('sha256').update(key).digest('base64').replace(/=+$/, '')}`;
+    onObserved?.(fingerprint);
+    if (!trustedFingerprint) return false;
+    const expected = Buffer.from(trustedFingerprint);
+    const actual = Buffer.from(fingerprint);
+    return expected.length === actual.length && timingSafeEqual(expected, actual);
+  };
+
+export const getSingleCommandCloseResult = (completed: boolean, output: string) => {
+  const error = completed ? getDeviceCommandError(output) : '设备在命令完成前关闭连接，结果不完整';
+  return { success: error === null, complete: completed, ...(error ? { error } : {}) };
+};
+
+export const isBatchCloseComplete = (
+  sentCount: number,
+  commandCount: number,
+  activeCommand: string | null
+): boolean => {
+  return sentCount === commandCount && activeCommand === null;
+};
+
+export type HostKeyChallenge = {
+  fingerprint: string;
+  host: string;
+  port: number;
+  changed: boolean;
+  expiresAt: number;
+};
+export const isValidFirstHostKeyTrust = (
+  challenge: HostKeyChallenge | undefined,
+  device: { host: string; port: number } | null,
+  fingerprint: string,
+  now = Date.now()
+): boolean =>
+  Boolean(
+    challenge &&
+      device &&
+      !challenge.changed &&
+      challenge.expiresAt >= now &&
+      challenge.fingerprint === fingerprint &&
+      challenge.host === device.host &&
+      challenge.port === device.port
+  );
+
 const COMMAND_ERROR_PATTERNS = [
   /^error\s*:/i,
   /^% ?error/i,
@@ -85,13 +138,35 @@ export const formatBatchCommandError = ({
 };
 
 export const isCliPromptReady = (text: string): boolean => {
-  const trimmed = text.trimEnd();
-  const patterns = [/<[^>]+>\s*$/, /\[[^\]]+\]\s*$/, CONFIRMATION_PROMPT_PATTERN, /[>#$]\s*$/];
-
-  return (
-    patterns.some((pattern) => pattern.test(trimmed)) || text.includes('User Access Verification')
-  );
+  return isDevicePromptReady(text) || CONFIRMATION_PROMPT_PATTERN.test(text.trimEnd());
 };
+
+// A '#' configuration separator, login banner or confirmation question is never a completed read.
+// HRP_M / HRP_S (and HRP_A on some versions) prefix the prompt on firewalls in a hot-standby pair.
+export const isDevicePromptReady = (text: string): boolean =>
+  /(?:^|\r?\n)[ \t]*(?:HRP_[A-Z])?(?:<[^<>\r\n\s]+>|\[(?![Yy]\/[Nn]\])[^<>[\]\r\n\s]+\])[ \t]*$/.test(
+    text.trimEnd()
+  );
+
+export const isConfirmationPromptPending = (text: string): boolean =>
+  !isDevicePromptReady(text) && CONFIRMATION_PROMPT_PATTERN.test(text.trimEnd());
+
+// The standby member of an HRP pair must not be configured directly.
+export const isHrpStandbyPrompt = (text: string): boolean =>
+  /(?:^|\r?\n)[ \t]*HRP_S[<[][^\r\n]*$/.test(text.trimEnd());
+
+const PAGER_PROMPT_PATTERN = /[ \t]*-{2,}[ \t]*More[ \t]*-{2,}[ \t]*$/;
+
+// VRP pages long output on VTYs that keep the default screen-length.
+export const isPagerPromptPending = (text: string): boolean =>
+  PAGER_PROMPT_PATTERN.test(text.trimEnd());
+
+export const stripPagerArtifacts = (text: string): string =>
+  text
+    .replace(/[ \t]*-{2,}[ \t]*More[ \t]*-{2,}[ \t]*/g, '')
+    // Cursor movement and line-erase sequences from the pager redraw and VTY line editing.
+    // eslint-disable-next-line no-control-regex
+    .replace(/\x1b\[[\d;?]*[A-Za-z]/g, '');
 
 export const getBatchShellStartupAction = ({
   waitForPrompt,

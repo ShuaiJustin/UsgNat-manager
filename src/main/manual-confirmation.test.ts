@@ -48,3 +48,22 @@ test('clears previous pending requests when a new confirmation starts', () => {
   assert.deepEqual(confirmations, [false]);
   assert.deepEqual(manager.getPending(), latestRequest);
 });
+
+test('timeouts and cancellations are reported separately from an explicit rejection', async () => {
+  const manager = new ManualConfirmationManager();
+  const results: unknown[][] = [];
+  const rejected = manager.start({ newIP: '1.1.1.1', deviceCount: 1, timeoutMs: 5000 }, (...args) =>
+    results.push(args)
+  );
+  manager.respond(rejected.requestId, false);
+  manager.start({ newIP: '1.1.1.1', deviceCount: 1, timeoutMs: 5000 }, (...args) =>
+    results.push(args)
+  );
+  manager.clear(false);
+  manager.start({ newIP: '1.1.1.1', deviceCount: 1, timeoutMs: 1 }, (...args) =>
+    results.push(args)
+  );
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.deepEqual(results, [[false], [false, 'cancelled'], [false, 'timeout']]);
+  assert.equal(manager.getPending(), null);
+});

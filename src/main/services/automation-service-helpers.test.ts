@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
+import * as automationHelpers from './automation-service-helpers.ts';
 import {
+  ManualConfirmationRequestController,
   assertRuleVerificationSucceeded,
   buildScopedRollbackCommands,
   buildBatchUpdateIPCommands,
@@ -9,13 +11,133 @@ import {
   createNatRulePayloads,
   createRuleSnapshots,
   getUpdatedRuleVerificationIssues,
+  hasWriteRelevantConfigChange,
   parseScheduledTimeParts,
-  resolveScheduledUpdateIP,
   shouldClearPendingScheduledIP,
   shouldClearPendingUpdateTasks,
   shouldScheduleDailyUpdate,
 } from './automation-service-helpers.ts';
 import { usgParser } from './usg-parser.ts';
+
+type AutomationRunControllerLike = {
+  begin: () => number;
+  isCancelled: (token: number) => boolean;
+  track: (task: Promise<void>) => Promise<void>;
+  cancelAndWait: (cancelPending?: () => void) => Promise<void>;
+};
+
+test('automation cancellation invalidates the run and waits for its safe completion', async () => {
+  const Controller = (
+    automationHelpers as unknown as {
+      AutomationRunController?: new () => AutomationRunControllerLike;
+    }
+  ).AutomationRunController;
+  assert.equal(typeof Controller, 'function');
+
+  const controller = new Controller!();
+  const token = controller.begin();
+  let finishRun: (() => void) | undefined;
+  const activeRun = controller.track(
+    new Promise<void>((resolve) => {
+      finishRun = resolve;
+    })
+  );
+  let stopped = false;
+  const stop = controller.cancelAndWait(() => {
+    stopped = true;
+  });
+
+  await Promise.resolve();
+  assert.equal(stopped, true);
+  assert.equal(controller.isCancelled(token), true);
+  let stopFinished = false;
+  void stop.then(() => {
+    stopFinished = true;
+  });
+  await Promise.resolve();
+  assert.equal(stopFinished, false);
+
+  finishRun?.();
+  await Promise.all([activeRun, stop]);
+  assert.equal(stopFinished, true);
+  assert.equal(controller.isCancelled(controller.begin()), false);
+});
+
+test('cancelled runs reject late manual confirmation requests before emitting them', async () => {
+  const controller = new ManualConfirmationRequestController();
+  let emitted = false;
+
+  const confirmed = await controller.request(
+    () => true,
+    () => {
+      emitted = true;
+    }
+  );
+
+  assert.equal(confirmed, 'cancelled');
+  assert.equal(emitted, false);
+});
+
+test('cancelling a pending manual confirmation resolves it once', async () => {
+  const controller = new ManualConfirmationRequestController();
+  let respond: ((confirmed: boolean) => void) | undefined;
+  const pending = controller.request(
+    () => false,
+    (callback) => {
+      respond = callback;
+    }
+  );
+
+  controller.cancel();
+  respond?.(true);
+
+  assert.equal(await pending, 'cancelled');
+});
+
+test('manual confirmation distinguishes explicit rejection from timeout', async () => {
+  const controller = new ManualConfirmationRequestController();
+  const outcomes = await Promise.all([
+    controller.request(
+      () => false,
+      (respond) => respond(false)
+    ),
+    controller.request(
+      () => false,
+      (respond) => respond(false, 'timeout')
+    ),
+    controller.request(
+      () => false,
+      (respond) => respond(true)
+    ),
+  ]);
+  assert.deepEqual(outcomes, ['rejected', 'timeout', 'confirmed']);
+});
+
+test('only write-relevant config changes count as a new write scope', () => {
+  const base = {
+    enabled: true,
+    selectedDevices: ['a'],
+    notifyTypes: ['ipChange'],
+    checkInterval: 5,
+  };
+  assert.equal(hasWriteRelevantConfigChange(base, { ...base }), false);
+  assert.equal(
+    hasWriteRelevantConfigChange(base, {
+      ...base,
+      notifyTypes: [],
+      checkInterval: 10,
+      windowsNotifyEnabled: false,
+      confirmCount: 2,
+      checkSources: ['ip.sb'],
+    }),
+    false
+  );
+  assert.equal(hasWriteRelevantConfigChange(base, { ...base, selectedDevices: ['a', 'b'] }), true);
+  assert.equal(
+    hasWriteRelevantConfigChange(base, { ...base, securityOptions: ['manualConfirm'] }),
+    true
+  );
+});
 
 test('parses valid scheduled times into hour and minute parts', () => {
   assert.deepEqual(parseScheduledTimeParts('09:30'), { hour: 9, minute: 30 });
@@ -225,12 +347,6 @@ test('builds automatic batch update commands when the device currently has no NA
   assert.equal(commands.includes('undo nat server name shcrystal'), false);
 });
 
-test('scheduled strategy uses pending IP first and current IP when no change is pending', () => {
-  assert.equal(resolveScheduledUpdateIP('2.2.2.2', '1.1.1.1'), '2.2.2.2');
-  assert.equal(resolveScheduledUpdateIP(null, '1.1.1.1'), '1.1.1.1');
-  assert.equal(resolveScheduledUpdateIP('', ''), null);
-});
-
 test('schedules daily updates whenever scheduled auto update is enabled', () => {
   assert.equal(
     shouldScheduleDailyUpdate({
@@ -421,4 +537,25 @@ test('reports missing managed NAT rules after update verification', () => {
 test('turns enabled rule verification failures into update-blocking errors', () => {
   assert.doesNotThrow(() => assertRuleVerificationSucceeded(true));
   assert.throws(() => assertRuleVerificationSucceeded(false), /verification/i);
+});
+
+test('rollback and verification never adopt a different named rule with the same endpoint', () => {
+  const old = {
+    id: 'managed',
+    ruleName: 'managed',
+    protocol: 'TCP',
+    globalIp: '1.1.1.1',
+    globalPort: '80',
+    insideIp: '192.168.1.10',
+    insidePort: '80',
+    enabled: true,
+    noReverse: false,
+  };
+  const output = 'nat server unrelated protocol tcp global 2.2.2.2 80 inside 192.168.1.10 80';
+  const commands = buildScopedRollbackCommands([old], output, usgParser);
+  assert.equal(
+    commands.some((command) => command.startsWith('undo nat server')),
+    false
+  );
+  assert.equal(getUpdatedRuleVerificationIssues([old], '2.2.2.2', output, usgParser).length, 1);
 });

@@ -13,7 +13,7 @@ const AutomationMonitorSection: React.FC<AutomationMonitorSectionProps> = ({ t }
   const monitorEnabled = ipMonitorEnabled !== false;
 
   return (
-    <Card title={t('automation.ipMonitoring')} style={{ marginBottom: 24 }}>
+    <Card>
       <Form.Item
         label={t('automation.enableMonitoring')}
         name="ipMonitorEnabled"
@@ -30,7 +30,13 @@ const AutomationMonitorSection: React.FC<AutomationMonitorSectionProps> = ({ t }
           rules={monitorEnabled ? [{ required: true }] : []}
           extra={t('automation.checkIntervalHint')}
         >
-          <InputNumber min={1} max={60} style={{ width: '100%' }} disabled={!monitorEnabled} />
+          <InputNumber
+            min={1}
+            max={60}
+            addonAfter="分钟"
+            style={{ width: '100%' }}
+            disabled={!monitorEnabled}
+          />
         </Form.Item>
 
         <Form.Item
@@ -40,7 +46,13 @@ const AutomationMonitorSection: React.FC<AutomationMonitorSectionProps> = ({ t }
           rules={monitorEnabled ? [{ required: true }] : []}
           extra={t('automation.confirmCountHint')}
         >
-          <InputNumber min={1} max={10} style={{ width: '100%' }} disabled={!monitorEnabled} />
+          <InputNumber
+            min={1}
+            max={10}
+            addonAfter="次"
+            style={{ width: '100%' }}
+            disabled={!monitorEnabled}
+          />
         </Form.Item>
       </div>
 

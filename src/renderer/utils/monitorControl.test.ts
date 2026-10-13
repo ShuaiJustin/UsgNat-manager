@@ -1,6 +1,20 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
+test('monitor restarts preserve explicit managed scope and notification choices', async () => {
+  const { buildAutomationMonitorStartConfig } = await import('./monitorControl.ts');
+  const config = buildAutomationMonitorStartConfig({
+    clientEgressConfirmed: true,
+    managedRuleIds: ['rule-1'],
+    windowsNotifyEnabled: false,
+    notifyTypes: ['updateFailed'],
+  });
+  assert.equal(config.clientEgressConfirmed, true);
+  assert.deepEqual(config.managedRuleIds, ['rule-1']);
+  assert.equal(config.windowsNotifyEnabled, false);
+  assert.deepEqual(config.notifyTypes, ['updateFailed']);
+});
+
 import { DEFAULT_AUTOMATION_CHECK_SOURCES } from './automationConfig.ts';
 import {
   buildAutomationMonitorStartConfig,
@@ -59,6 +73,10 @@ test('buildAutomationMonitorStartConfig applies defaults and normalizes sources'
     autoUpdateEnabled: true,
     checkSources: ['cip', 'ipify', 'cip'],
     selectedDevices: ['device-1'],
+    clientEgressConfirmed: false,
+    managedRuleIds: [],
+    windowsNotifyEnabled: true,
+    notifyTypes: ['ipChange', 'updateSuccess', 'updateFailed'],
   });
 
   assert.equal(config.enabled, true);
@@ -113,6 +131,10 @@ test('startMonitoringService prefers automation start when saved automation moni
     delayMinutes: 5,
     scheduledTime: null,
     selectedDevices: ['device-1'],
+    clientEgressConfirmed: false,
+    managedRuleIds: [],
+    windowsNotifyEnabled: true,
+    notifyTypes: ['ipChange', 'updateSuccess', 'updateFailed'],
     checkInterval: 5,
     confirmCount: 3,
     checkSources: ['cip.cc'],

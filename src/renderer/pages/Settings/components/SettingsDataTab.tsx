@@ -7,6 +7,7 @@ interface SettingsDataTabProps {
   databaseInfo: SettingsDatabaseInfo;
   t: SettingsTranslation;
   onBackupData: () => void;
+  onRestoreData: () => void;
   onClearData: () => void;
   onExportConfig: () => void;
   onImportConfig: () => void;
@@ -16,6 +17,7 @@ const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
   databaseInfo,
   t,
   onBackupData,
+  onRestoreData,
   onClearData,
   onExportConfig,
   onImportConfig,
@@ -30,10 +32,15 @@ const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
 
     <Space style={{ marginTop: 15 }}>
       <Button onClick={onBackupData}>{t('settings.backupData')}</Button>
+      <Button onClick={onRestoreData}>恢复备份</Button>
       <Button danger onClick={onClearData}>
         {t('settings.clearData')}
       </Button>
     </Space>
+    <p style={{ marginTop: 12 }}>
+      备份包含设备、规则、配置、凭据和最近 1000
+      条日志。恢复会替换这些数据，并先创建当前状态备份。系统加密凭据通常仅能在原系统账户使用；密钥未包含在备份内。
+    </p>
 
     <Divider />
 

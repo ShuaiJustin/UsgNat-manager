@@ -1,4 +1,4 @@
-import { Notification } from 'electron';
+import { BrowserWindow, Notification } from 'electron';
 
 import { emailService } from './email-service';
 import { logger } from './logger';
@@ -64,16 +64,13 @@ class Notifier {
   }
 
   async notifyIPChange(oldIP: string, newIP: string): Promise<void> {
-    if (!this.config.notifyTypes.includes('ipChange')) {
-      return;
-    }
-
-    await this.showNotification({
-      title: '公网 IP 已变化',
-      body: `IP 地址从 ${oldIP} 变更为 ${newIP}`,
-      type: 'info',
-      urgency: 'normal',
-    });
+    if (this.config.notifyTypes.includes('ipChange'))
+      await this.showNotification({
+        title: '公网 IP 已变化',
+        body: `IP 地址从 ${oldIP} 变更为 ${newIP}`,
+        type: 'info',
+        urgency: 'normal',
+      });
 
     if (this.config.emailNotifyEnabled) {
       try {
@@ -87,16 +84,13 @@ class Notifier {
   }
 
   async notifyUpdateSuccess(deviceName: string, ruleCount: number, newIP?: string): Promise<void> {
-    if (!this.config.notifyTypes.includes('updateSuccess')) {
-      return;
-    }
-
-    await this.showNotification({
-      title: 'NAT 规则更新成功',
-      body: `设备 ${deviceName} 的 ${ruleCount} 条规则已成功更新`,
-      type: 'success',
-      urgency: 'low',
-    });
+    if (this.config.notifyTypes.includes('updateSuccess'))
+      await this.showNotification({
+        title: 'NAT 规则更新成功',
+        body: `设备 ${deviceName} 的 ${ruleCount} 条规则已成功更新`,
+        type: 'success',
+        urgency: 'low',
+      });
 
     if (this.config.emailNotifyEnabled && newIP) {
       try {
@@ -110,16 +104,13 @@ class Notifier {
   }
 
   async notifyUpdateFailed(deviceName: string, error: string): Promise<void> {
-    if (!this.config.notifyTypes.includes('updateFailed')) {
-      return;
-    }
-
-    await this.showNotification({
-      title: 'NAT 规则更新失败',
-      body: `设备 ${deviceName} 更新失败: ${error}`,
-      type: 'error',
-      urgency: 'critical',
-    });
+    if (this.config.notifyTypes.includes('updateFailed'))
+      await this.showNotification({
+        title: 'NAT 规则更新失败',
+        body: `设备 ${deviceName} 更新失败: ${error}`,
+        type: 'error',
+        urgency: 'critical',
+      });
 
     if (this.config.emailNotifyEnabled) {
       try {
@@ -132,17 +123,28 @@ class Notifier {
     }
   }
 
-  async notifyDeviceOffline(deviceName: string): Promise<void> {
-    if (!this.config.notifyTypes.includes('deviceOffline')) {
-      return;
-    }
-
+  /** Reminds the user only when no app window is visible to show the confirmation dialog. */
+  async notifyManualConfirmationRequired(newIP: string): Promise<void> {
+    const windowVisible = BrowserWindow.getAllWindows().some(
+      (window) => !window.isDestroyed() && window.isVisible() && !window.isMinimized()
+    );
+    if (windowVisible) return;
     await this.showNotification({
-      title: '设备连接失败',
-      body: `设备 ${deviceName} 无法连接，请检查网络或设备状态`,
+      title: 'NAT 规则更新待确认',
+      body: `公网 IP 已变为 ${newIP}，请打开程序确认更新；超时未确认将在下个检测周期重新请求`,
       type: 'warning',
-      urgency: 'normal',
+      urgency: 'critical',
     });
+  }
+
+  async notifyDeviceOffline(deviceName: string): Promise<void> {
+    if (this.config.notifyTypes.includes('deviceOffline'))
+      await this.showNotification({
+        title: '设备连接失败',
+        body: `设备 ${deviceName} 无法连接，请检查网络或设备状态`,
+        type: 'warning',
+        urgency: 'normal',
+      });
 
     if (this.config.emailNotifyEnabled) {
       try {
@@ -183,6 +185,8 @@ class Notifier {
   }
 
   async notifyBatchUpdateCompleted(successCount: number, failedCount: number): Promise<void> {
+    if (!this.config.notifyTypes.includes(failedCount > 0 ? 'updateFailed' : 'updateSuccess'))
+      return;
     const type: NotificationType = failedCount > 0 ? 'warning' : 'success';
     const body =
       failedCount > 0

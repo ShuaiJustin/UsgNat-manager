@@ -67,11 +67,18 @@ test('getSMTPConfigValidationError returns the first required-field failure', ()
   assert.equal(getSMTPConfigValidationError(createConfig()), null);
 });
 
+const PRODUCTION_TIMEOUTS = {
+  connectionTimeout: 15000,
+  greetingTimeout: 15000,
+  socketTimeout: 30000,
+};
+
 test('createBaseTransportConfig builds the shared SMTP transport shape', () => {
   assert.deepEqual(createBaseTransportConfig(createConfig()), {
     host: 'smtp.example.com',
     port: 465,
     secure: true,
+    ...PRODUCTION_TIMEOUTS,
     auth: {
       user: 'admin@example.com',
       pass: 'secret',
@@ -79,7 +86,7 @@ test('createBaseTransportConfig builds the shared SMTP transport shape', () => {
   });
 });
 
-test('createBaseTransportConfig preserves STARTTLS and plain-text flags when provided', () => {
+test('createBaseTransportConfig requires STARTTLS by default and never forwards ignoreTLS', () => {
   assert.deepEqual(
     createBaseTransportConfig(
       createConfig({
@@ -92,6 +99,7 @@ test('createBaseTransportConfig preserves STARTTLS and plain-text flags when pro
       port: 465,
       secure: false,
       requireTLS: true,
+      ...PRODUCTION_TIMEOUTS,
       auth: {
         user: 'admin@example.com',
         pass: 'secret',
@@ -110,13 +118,15 @@ test('createBaseTransportConfig preserves STARTTLS and plain-text flags when pro
       host: 'smtp.example.com',
       port: 465,
       secure: false,
-      ignoreTLS: true,
+      ...PRODUCTION_TIMEOUTS,
       auth: {
         user: 'admin@example.com',
         pass: 'secret',
       },
     }
   );
+
+  assert.equal(createBaseTransportConfig(createConfig({ secure: false })).requireTLS, true);
 });
 
 test('createTestTransportConfig extends the base transport config with safe timeouts', () => {

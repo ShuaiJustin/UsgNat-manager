@@ -1,21 +1,25 @@
-import { app, BrowserWindow } from 'electron';
+import { app, BrowserWindow, powerMonitor } from 'electron';
 import path from 'path';
 
 import { DEFAULT_IP_CHECK_SOURCES } from './ip-check-sources';
 import { registerIpcHandlers } from './ipc';
-import { createTray } from './tray';
+import { createTray, refreshTrayMenu } from './tray';
 import { createWindow } from './window';
+import { isDevMode } from './runtime-mode';
 import { revealMainWindow } from './window-visibility';
 import { type AutomationConfig, automationService } from './services/automation-service';
 import { configService } from './services/config-service';
 import { databaseService } from './services/database-service';
 import type { SMTPConfig } from './services/email-service';
 import { emailService } from './services/email-service';
-import { ipMonitor } from './services/ip-monitor';
+import { ipMonitor, type IPMonitorConfig } from './services/ip-monitor';
 import { logger } from './services/logger';
 import { notifier } from './services/notifier';
 import { disconnectPrisma } from './services/prisma-client';
 import { customUpdater } from './services/custom-updater';
+import { restoreAutomationUnlessMandatory } from './services/custom-updater-helpers';
+import { mandatoryUpdateBusinessGate } from './services/mandatory-update-business-gate';
+import { ConfigurationLifecycle } from './services/configuration-lifecycle';
 
 type StoredEmailConfig = SMTPConfig & {
   enabled?: boolean;
@@ -29,6 +33,14 @@ type StoredAutomationConfig = AutomationConfig & {
   checkSources?: string[];
 };
 
+type RuntimeState = {
+  monitoring: boolean;
+  automationRunning: boolean;
+  automationConfig: AutomationConfig;
+  monitorConfig: IPMonitorConfig;
+};
+let runtimeBeforeMaintenance: RuntimeState | null = null;
+
 const getErrorMessage = (error: unknown, fallback: string): string =>
   error instanceof Error ? error.message : fallback;
 
@@ -37,6 +49,135 @@ const dbPath = path.join(userDataPath, 'usg-nat.db');
 process.env.DATABASE_URL = `file:${dbPath}`;
 
 let mainWindow: BrowserWindow | null = null;
+
+const cleanupStoredLogs = async () => {
+  const settings = await configService.getConfig<{ logRetentionDays?: number }>('app');
+  const days = settings?.logRetentionDays ?? 30;
+  if (!Number.isInteger(days) || days < 7 || days > 365) {
+    throw new Error('日志保留天数必须为 7 到 365 的整数');
+  }
+  await logger.cleanup(days);
+};
+
+let updaterConfigurationTask: Promise<void> = Promise.resolve();
+const queueUpdaterConfiguration = () => {
+  // A server check may block the mandatory gate and wait for admitted config saves to release it.
+  // Complete local runtime application first, then run serialized checks in the background.
+  updaterConfigurationTask = updaterConfigurationTask
+    .then(() => customUpdater.startPeriodicCheck())
+    .catch((error) => {
+      void logger
+        .error('自动更新', '更新检查配置应用失败', {
+          error: getErrorMessage(error, '配置恢复失败'),
+        })
+        .catch(console.error);
+    });
+};
+
+const applyStoredConfigurationNow = async (
+  type?: string,
+  duringMaintenance = false,
+  runtimeOverride?: RuntimeState
+) => {
+  if (!type || type === 'all' || type === 'email') {
+    const emailConfig = await configService.getConfig<StoredEmailConfig>('email');
+    if (emailConfig) emailService.configure(emailConfig);
+    else emailService.clearConfiguration();
+    notifier.updateConfig({ emailNotifyEnabled: emailConfig?.enabled === true });
+  }
+  if (!type || type === 'all' || type === 'app') await cleanupStoredLogs();
+  if (!type || type === 'all' || type === 'automation') {
+    await automationService.stop();
+    ipMonitor.stop();
+    const automationConfig: StoredAutomationConfig | null =
+      runtimeOverride?.automationConfig ??
+      (await configService.getConfig<StoredAutomationConfig>('automation'));
+    notifier.updateConfig({
+      windowsNotifyEnabled: automationConfig?.windowsNotifyEnabled !== false,
+      notifyTypes: automationConfig?.notifyTypes ?? ['ipChange', 'updateSuccess', 'updateFailed'],
+    });
+    const shouldMonitor = runtimeOverride
+      ? runtimeOverride.monitoring
+      : automationConfig?.ipMonitorEnabled;
+    if (
+      shouldMonitor &&
+      runtimeOverride &&
+      (!runtimeOverride.automationRunning || !runtimeOverride.automationConfig.enabled)
+    ) {
+      if (
+        !customUpdater.isMandatoryUpdateRequired() &&
+        !mandatoryUpdateBusinessGate.isBlocked('mandatory')
+      ) {
+        ipMonitor.updateConfig(runtimeOverride.monitorConfig);
+        await ipMonitor.start();
+      }
+    } else if (shouldMonitor && automationConfig) {
+      await restoreAutomationUnlessMandatory(
+        () => customUpdater.isMandatoryUpdateRequired(),
+        () =>
+          automationService.start(
+            {
+              ...automationConfig,
+              enabled: true,
+              autoUpdateEnabled: automationConfig.autoUpdateEnabled === true,
+              clientEgressConfirmed: automationConfig.clientEgressConfirmed === true,
+              managedRuleIds: automationConfig.managedRuleIds ?? [],
+              triggerType: automationConfig.triggerType ?? 'immediate',
+              selectedDevices: automationConfig.selectedDevices ?? [],
+              checkSources: automationConfig.checkSources ?? [...DEFAULT_IP_CHECK_SOURCES],
+            },
+            { duringMaintenance }
+          ),
+        () => automationService.stop()
+      );
+    }
+  }
+  if (!type || type === 'all' || type === 'update') queueUpdaterConfiguration();
+};
+
+const configurationLifecycle = new ConfigurationLifecycle({
+  gate: mandatoryUpdateBusinessGate,
+  stop: async () => {
+    await automationService.stop();
+    ipMonitor.stop();
+  },
+  apply: applyStoredConfigurationNow,
+  beforeStop: () => {
+    runtimeBeforeMaintenance = {
+      monitoring: ipMonitor.isMonitoring(),
+      automationRunning: automationService.getStatus().isRunning,
+      automationConfig: automationService.getConfig(),
+      monitorConfig: ipMonitor.getConfig(),
+    };
+  },
+  restoreAfterFailure: async () => {
+    if (!runtimeBeforeMaintenance) throw new Error('缺少维护前运行状态，已保持停止');
+    await applyStoredConfigurationNow('all', true, runtimeBeforeMaintenance);
+  },
+  reportRestoreError: (error) =>
+    logger.error('数据维护', '数据操作后恢复服务失败', {
+      error: getErrorMessage(error, '恢复失败'),
+    }),
+});
+
+const applyStoredConfiguration = (type?: string) => configurationLifecycle.apply(type);
+
+const runDataChange = async <T>(
+  _reason: 'import' | 'reset' | 'restore',
+  action: () => Promise<T>
+): Promise<T> => {
+  try {
+    return await configurationLifecycle.runDataChange(action);
+  } finally {
+    refreshTrayMenu();
+    if (!mandatoryUpdateBusinessGate.isBlocked() && automationService.getStatus().isRunning)
+      void automationService.resume().catch((error) =>
+        logger.error('自动化服务', '维护恢复后对账失败', {
+          error: getErrorMessage(error, '恢复失败'),
+        })
+      );
+  }
+};
 
 const gotTheLock = app.requestSingleInstanceLock();
 app.disableHardwareAcceleration();
@@ -61,84 +202,61 @@ if (!gotTheLock) {
     app.setAppUserModelId('com.crystal.usg-nat-manager');
 
     mainWindow = createWindow();
-    createTray(mainWindow);
-    registerIpcHandlers();
+    createTray(mainWindow, customUpdater);
+    registerIpcHandlers({
+      aroundDataChange: runDataChange,
+      afterConfigChange: applyStoredConfiguration,
+    });
+    customUpdater.setMandatoryUpdateStateHandler(async (required) => {
+      if (!required) {
+        mandatoryUpdateBusinessGate.unblock();
+        refreshTrayMenu();
+        return;
+      }
+
+      mandatoryUpdateBusinessGate.block();
+      refreshTrayMenu();
+      try {
+        await automationService.stop();
+        await mandatoryUpdateBusinessGate.waitForIdle();
+      } finally {
+        ipMonitor.stop();
+      }
+    });
     customUpdater.setMainWindow(mainWindow);
 
     setTimeout(() => {
-      customUpdater.cleanupOldInstallers().catch(console.error);
-    }, 1000);
-
-    setTimeout(async () => {
-      try {
-        const emailConfig = await configService.getConfig<StoredEmailConfig>('email');
-        if (!emailConfig) {
-          return;
-        }
-
-        emailService.configure(emailConfig);
-        notifier.updateConfig({
-          emailNotifyEnabled: emailConfig.enabled || false,
-          notifyTypes: emailConfig.notifyTypes || [
-            'ipChange',
-            'updateSuccess',
-            'updateFailed',
-            'deviceOffline',
-          ],
-        });
-      } catch (error) {
-        await logger.error('邮件服务', '恢复邮件配置失败', {
-          error: getErrorMessage(error, '恢复邮件配置失败'),
-        });
-        console.error('恢复邮件配置失败:', error);
-      }
+      void applyStoredConfiguration().catch((error) =>
+        logger.error('启动恢复', '配置恢复失败', {
+          error: getErrorMessage(error, '配置恢复失败'),
+        })
+      );
     }, 1500);
-
-    setTimeout(async () => {
-      try {
-        const automationConfig =
-          await configService.getConfig<StoredAutomationConfig>('automation');
-        if (!automationConfig?.ipMonitorEnabled) {
-          return;
-        }
-
-        ipMonitor.updateConfig({
-          checkInterval: automationConfig.checkInterval || 5,
-          confirmCount: automationConfig.confirmCount || 3,
-          sources: automationConfig.checkSources || [...DEFAULT_IP_CHECK_SOURCES],
-        });
-
-        await automationService.start({
-          enabled: true,
-          autoUpdateEnabled: automationConfig.autoUpdateEnabled || false,
-          triggerType: automationConfig.triggerType || 'immediate',
-          delayMinutes: automationConfig.delayMinutes || 5,
-          scheduledTime: automationConfig.scheduledTime,
-          selectedDevices: automationConfig.selectedDevices || [],
-          checkInterval: automationConfig.checkInterval || 5,
-          confirmCount: automationConfig.confirmCount || 3,
-          checkSources: automationConfig.checkSources || [...DEFAULT_IP_CHECK_SOURCES],
-          backupOptions: automationConfig.backupOptions || [],
-          backupKeepCount: automationConfig.backupKeepCount || 10,
-          securityOptions: automationConfig.securityOptions || [],
-        });
-
-        await logger.info('自动化服务', '自动化配置已恢复并启动');
-      } catch (error) {
-        await logger.error('自动化服务', '恢复自动化配置失败', {
-          error: getErrorMessage(error, '恢复自动化配置失败'),
-        });
-        console.error('恢复自动化配置失败:', error);
-      }
-    }, 2000);
-
-    if (process.env.NODE_ENV !== 'development') {
-      setTimeout(() => {
-        customUpdater.checkForUpdates(false).catch(console.error);
-      }, 3000);
-    }
-
-    if (process.env.NODE_ENV === 'development') {
+    const retentionTimer = setInterval(
+      () => {
+        if (configurationLifecycle.isMaintaining()) return;
+        const release = mandatoryUpdateBusinessGate.tryEnter();
+        if (!release) return;
+        void cleanupStoredLogs()
+          .catch((error) =>
+            logger.error('日志清理', '自动清理失败', {
+              error: getErrorMessage(error, '日志清理失败'),
+            })
+          )
+          .finally(release);
+      },
+      24 * 60 * 60 * 1000
+    );
+    retentionTimer.unref();
+    powerMonitor.on('resume', () => {
+      if (!configurationLifecycle.isMaintaining())
+        void automationService.resume().catch((error) =>
+          logger.error('自动化服务', '恢复后对账失败', {
+            error: getErrorMessage(error, '恢复失败'),
+          })
+        );
+    });
+    if (isDevMode()) {
       mainWindow.webContents.openDevTools();
     }
   });

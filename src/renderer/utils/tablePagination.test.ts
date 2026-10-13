@@ -21,9 +21,9 @@ test('keeps table pagination uncontrolled and exposes 20/30 page-size options', 
 });
 
 test('formats total text with the provided label', () => {
-  const pagination = createTablePagination(20, '信息');
+  const pagination = createTablePagination(20, '条');
 
-  assert.equal(pagination.showTotal?.(32), '信息: 32');
+  assert.equal(pagination.showTotal?.(32), '共 32 条');
 });
 
 test('renders the page-size dropdown in the document body to avoid table clipping', () => {

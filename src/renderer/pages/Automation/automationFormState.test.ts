@@ -1,10 +1,63 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
+test('partial saved settings keep form defaults usable for validation', () => {
+  const { formValues } = buildAutomationFormSnapshot({
+    automationConfig: { autoUpdateEnabled: false, selectedDevices: ['device-1'] },
+  });
+  assert.equal(formValues.checkInterval, 5);
+  assert.equal(formValues.confirmCount, 3);
+  assert.equal(formValues.triggerType, 'immediate');
+  assert.equal(formValues.windowsNotifyEnabled, true);
+  assert.equal(formValues.smtpPort, '465');
+});
+
 import {
   buildAutomationFormSnapshot,
   createAutomationFormSnapshot,
 } from './automationFormState.ts';
+
+test('automation snapshots preserve explicit outlet ownership and managed rule scope', () => {
+  const snapshot = buildAutomationFormSnapshot({
+    automationConfig: {
+      clientEgressConfirmed: true,
+      managedRuleIds: ['rule-1'],
+    },
+  });
+  assert.equal(snapshot.formValues.clientEgressConfirmed, true);
+  assert.deepEqual(snapshot.formValues.managedRuleIds, ['rule-1']);
+  const defaults = createAutomationFormSnapshot(
+    {},
+    {
+      emailNotifyEnabled: false,
+      wechatNotifyEnabled: false,
+      wechatType: 'work',
+    }
+  );
+  assert.equal(defaults.formValues.clientEgressConfirmed, false);
+  assert.deepEqual(defaults.formValues.managedRuleIds, []);
+});
+
+test('saved automation settings exclude notification secrets and require safety checks', async () => {
+  const { buildStoredAutomationSettings } = await import('./automationFormState.ts');
+  const stored = buildStoredAutomationSettings({
+    selectedDevices: ['device-1'],
+    managedRuleIds: ['rule-1'],
+    clientEgressConfirmed: true,
+    smtpPassword: 'smtp-secret',
+    corpSecret: 'wechat-secret',
+    appSecret: 'app-secret',
+    backupOptions: [],
+    securityOptions: [],
+  });
+  assert.equal('smtpPassword' in stored, false);
+  assert.equal('corpSecret' in stored, false);
+  assert.equal('appSecret' in stored, false);
+  assert.equal(stored.clientEgressConfirmed, true);
+  assert.deepEqual(stored.managedRuleIds, ['rule-1']);
+  assert.ok(stored.backupOptions?.includes('autoBackup'));
+  assert.ok(stored.securityOptions?.includes('verifyRules'));
+});
 
 test('buildAutomationFormSnapshot keeps stored automation values for later reset', () => {
   const snapshot = buildAutomationFormSnapshot({

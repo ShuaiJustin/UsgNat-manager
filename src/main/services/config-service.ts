@@ -1,78 +1,52 @@
-import { randomBytes } from 'node:crypto';
 import { app } from 'electron';
 import fs from 'fs/promises';
 import path from 'path';
 
 import {
+  isConfigType,
+  type ConfigType,
   createConfigExportPayload,
-  decryptSensitiveConfig,
-  encryptSensitiveConfig,
+  SSH_HOST_KEY_PREFIX,
+  mergeImportedConfig,
+  removeMisplacedSecrets,
   parseStoredConfigs,
   summarizeConfigStats,
+  assertStoredConfiguration,
 } from './config-service-helpers';
 import { logger } from './logger';
 import { prisma } from './prisma-client';
+import { secretStorage } from './secret-protection';
 
-export type ConfigType =
-  | 'automation'
-  | 'notification'
-  | 'email'
-  | 'wechat'
-  | 'system'
-  | 'appearance'
-  | 'app'
-  | 'update';
+export type { ConfigType } from './config-service-helpers';
 
 const getErrorMessage = (error: unknown): string =>
   error instanceof Error ? error.message : String(error);
 
 class ConfigService {
-  private encryptionKey = '';
-  private keyFilePath: string;
-  private keyInitialized = false;
-
-  constructor() {
-    this.keyFilePath = path.join(app.getPath('userData'), '.credential-key');
-    this.initializeEncryptionKey().catch((error: unknown) => {
-      logger
-        .error('Config', 'Failed to initialize encryption key', {
-          error: getErrorMessage(error),
-        })
-        .catch(() => {});
-    });
-  }
-
-  private async initializeEncryptionKey(): Promise<void> {
-    try {
-      const keyData = await fs.readFile(this.keyFilePath, 'utf-8');
-      this.encryptionKey = keyData.trim();
-      this.keyInitialized = true;
-    } catch {
-      this.encryptionKey = randomBytes(32).toString('hex');
-      await fs.writeFile(this.keyFilePath, this.encryptionKey, { mode: 0o600 });
-      this.keyInitialized = true;
-    }
-  }
-
-  private async ensureKeyInitialized(): Promise<void> {
-    if (!this.keyInitialized) {
-      await this.initializeEncryptionKey();
-    }
-  }
-
-  private encryptSensitiveData<T>(type: ConfigType, data: T): T {
-    return encryptSensitiveConfig(type, data, this.encryptionKey);
-  }
-
-  private decryptSensitiveData<T>(type: ConfigType, data: T): T {
-    return decryptSensitiveConfig(type, data, this.encryptionKey, this.keyInitialized);
+  private async transformSensitiveData<T>(type: ConfigType, data: T, encrypt: boolean): Promise<T> {
+    const clean = removeMisplacedSecrets(type, data) as T;
+    if (type !== 'email' || !clean || typeof clean !== 'object') return clean;
+    const email = clean as { auth?: { pass?: string } };
+    if (!email.auth?.pass) return clean;
+    const pass = email.auth.pass;
+    const protectedOrLegacy = secretStorage.isProtected(pass) || pass.startsWith('U2FsdGVkX1');
+    return {
+      ...clean,
+      auth: {
+        ...email.auth,
+        pass: encrypt
+          ? await secretStorage.protect(pass)
+          : protectedOrLegacy
+            ? await secretStorage.reveal(pass)
+            : pass,
+      },
+    } as T;
   }
 
   async saveConfig<T>(type: ConfigType, data: T): Promise<void> {
     try {
-      await this.ensureKeyInitialized();
-
-      const encryptedData = this.encryptSensitiveData(type, data);
+      assertStoredConfiguration(type, data);
+      const encryptedData = await this.transformSensitiveData(type, data, true);
 
       await prisma.config.upsert({
         where: { key: type },
@@ -97,8 +71,6 @@ class ConfigService {
 
   async getConfig<T = unknown>(type: ConfigType, defaultValue?: T): Promise<T | null> {
     try {
-      await this.ensureKeyInitialized();
-
       const config = await prisma.config.findUnique({
         where: { key: type },
       });
@@ -108,7 +80,22 @@ class ConfigService {
       }
 
       const parsedData = JSON.parse(config.value) as T;
-      return this.decryptSensitiveData(type, parsedData) as T;
+      const clearData = await this.transformSensitiveData(type, parsedData, false);
+      const emailPass =
+        type === 'email' && parsedData && typeof parsedData === 'object'
+          ? (parsedData as { auth?: { pass?: string } }).auth?.pass
+          : undefined;
+      if (
+        JSON.stringify(removeMisplacedSecrets(type, parsedData)) !== JSON.stringify(parsedData) ||
+        (emailPass && !secretStorage.isProtected(emailPass))
+      ) {
+        const migrated = await this.transformSensitiveData(type, clearData, true);
+        await prisma.config.updateMany({
+          where: { id: config.id, value: config.value },
+          data: { value: JSON.stringify(migrated) },
+        });
+      }
+      return clearData;
     } catch (error: unknown) {
       await logger.error('Config', 'Failed to get config', {
         type,
@@ -137,20 +124,25 @@ class ConfigService {
   async getAllConfigs(): Promise<Record<string, unknown>> {
     try {
       const configs = await prisma.config.findMany();
-      return parseStoredConfigs(configs);
+      return Object.fromEntries(
+        Object.entries(parseStoredConfigs(configs)).map(([key, value]) => [
+          key,
+          removeMisplacedSecrets(key, value),
+        ])
+      );
     } catch (error: unknown) {
       await logger.error('Config', 'Failed to get all configs', { error: getErrorMessage(error) });
       return {};
     }
   }
 
-  async exportConfig(filePath?: string): Promise<string> {
+  async exportConfig(): Promise<string> {
     try {
       const configs = await this.getAllConfigs();
       const exportData = createConfigExportPayload(configs);
 
-      const defaultPath = path.join(app.getPath('userData'), `config-export-${Date.now()}.json`);
-      const targetPath = filePath || defaultPath;
+      // 导出路径由主进程决定，不接受渲染进程传入的任意路径。
+      const targetPath = path.join(app.getPath('userData'), `config-export-${Date.now()}.json`);
 
       await fs.writeFile(targetPath, JSON.stringify(exportData, null, 2), 'utf-8');
 
@@ -167,16 +159,45 @@ class ConfigService {
       const content = await fs.readFile(filePath, 'utf-8');
       const importData = JSON.parse(content) as { configs?: Record<string, unknown> };
 
-      if (!importData.configs) {
+      if (
+        !importData.configs ||
+        typeof importData.configs !== 'object' ||
+        Array.isArray(importData.configs)
+      ) {
         throw new Error('Invalid config file format');
       }
 
-      for (const [key, value] of Object.entries(importData.configs)) {
-        await this.saveConfig(key as ConfigType, value);
-      }
+      // Older exports may carry host-key trust (ssh-host:*) or retired keys; those are skipped,
+      // never imported, so trust can only be established by the SSH first-connection flow.
+      const entries = Object.entries(importData.configs).flatMap(([key, value]) =>
+        isConfigType(key) ? [[key, value] as const] : []
+      );
+      const skipped = Object.keys(importData.configs).filter((key) => !isConfigType(key));
+      if (skipped.length)
+        await logger.warning('Config', 'Skipped non-importable config keys', { keys: skipped });
+      const prepared = await Promise.all(
+        entries.map(async ([key, value]) => {
+          assertStoredConfiguration(key, value);
+          const merged = mergeImportedConfig(key, value, await this.getConfig(key));
+          assertStoredConfiguration(key, merged);
+          return {
+            key,
+            value: JSON.stringify(await this.transformSensitiveData(key, merged, true)),
+          };
+        })
+      );
+      await prisma.$transaction(
+        prepared.map(({ key, value }) =>
+          prisma.config.upsert({
+            where: { key },
+            create: { key, value },
+            update: { value },
+          })
+        )
+      );
 
       await logger.success('Config', 'Imported config successfully', {
-        count: Object.keys(importData.configs).length,
+        count: entries.length,
       });
     } catch (error: unknown) {
       await logger.error('Config', 'Failed to import config', { error: getErrorMessage(error) });
@@ -186,7 +207,10 @@ class ConfigService {
 
   async resetAllConfigs(): Promise<void> {
     try {
-      await prisma.config.deleteMany({});
+      // SSH 主机指纹只能经首次信任流程维护，重置配置时保留。
+      await prisma.config.deleteMany({
+        where: { NOT: { key: { startsWith: SSH_HOST_KEY_PREFIX } } },
+      });
       await logger.warning('Config', 'Reset all configs');
     } catch (error: unknown) {
       await logger.error('Config', 'Failed to reset configs', { error: getErrorMessage(error) });

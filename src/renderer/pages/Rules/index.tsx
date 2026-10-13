@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { App, Button, Card, Input, Popconfirm, Select, Space, Table, Tag } from 'antd';
+import { Alert, App, Button, Card, Input, Popconfirm, Select, Space, Table, Tag } from 'antd';
 import {
   DeleteOutlined,
   EditOutlined,
@@ -25,6 +25,38 @@ import {
 
 const getErrorMessage = (error: unknown, fallback: string): string =>
   error instanceof Error ? error.message : fallback;
+
+const renderDiff = (preview: {
+  added: string[];
+  deleted: string[];
+  updated: string[];
+  localOnlyCount?: number;
+}) => (
+  <div style={{ maxHeight: '50vh', overflowY: 'auto' }}>
+    <p>以下为完整设备快照与目标配置的实际差异。下发前保存设备备份，完成后回读核验。</p>
+    {(
+      [
+        ['新增', preview.added],
+        ['删除', preview.deleted],
+        ['修改', preview.updated],
+      ] as const
+    ).map(([label, values]) => (
+      <div key={label}>
+        <strong>
+          {label}：{values.length}
+        </strong>
+        {values.map((value) => (
+          <p key={value} style={{ wordBreak: 'break-all' }}>
+            {value}
+          </p>
+        ))}
+      </div>
+    ))}
+    {!!preview.localOnlyCount && (
+      <p>另有 {preview.localOnlyCount} 条禁用规则仅更新本地配置，不向设备添加。</p>
+    )}
+  </div>
+);
 
 const Rules: React.FC = () => {
   const { t } = useTranslation();
@@ -78,21 +110,28 @@ const Rules: React.FC = () => {
       void queryClient.invalidateQueries({ queryKey: ['rules'] });
       message.success(t('rules.syncSuccess'));
     },
-    onError: () => {
-      message.error(t('rules.syncFailed'));
+    onError: (error: unknown) => {
+      message.error(getErrorMessage(error, t('rules.syncFailed')));
     },
   });
 
   const syncToDeviceMutation = useMutation({
-    mutationFn: async (deviceId: string) => {
+    mutationFn: async ({ deviceId, token }: { deviceId: string; token: string }) => {
       const api = window.electronAPI;
       if (!api?.rule?.syncToDevice) {
         throw new Error('rule API 未就绪');
       }
-      return api.rule.syncToDevice(deviceId);
+      const result = await api.rule.syncToDevice(deviceId, token);
+      if (!result.success)
+        throw new Error(
+          `${result.status}: ${result.message}${result.backupId ? '；备份 ' + result.backupId : ''}`
+        );
+      return result;
     },
     onSuccess: (data) => {
-      if (data.syncedCount === 0) {
+      if (data.status === 'unsaved') {
+        message.warning(data.message);
+      } else if (data.syncedCount === 0) {
         message.info(data.message || t('common.info'));
       } else {
         message.success(data.message || `${t('rules.syncSuccess')} ${data.syncedCount}`);
@@ -113,7 +152,7 @@ const Rules: React.FC = () => {
     },
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['rules'] });
-      message.success(t('common.success'));
+      message.success('已删除本地待下发配置；设备需确认同步后删除');
     },
     onError: () => {
       message.error(t('common.error'));
@@ -244,14 +283,36 @@ const Rules: React.FC = () => {
         }
 
         try {
-          await window.electronAPI.rule.batchUpdateIP(
-            activeDeviceId,
-            selectedRowKeys.map(String),
+          const deviceId = activeDeviceId;
+          const ruleIds = selectedRowKeys.map(String);
+          const preview = await window.electronAPI.rule.previewBatchUpdateIP(
+            deviceId,
+            ruleIds,
             newIp
           );
-          await queryClient.invalidateQueries({ queryKey: ['rules'] });
-          message.success(`${t('common.success')} ${selectedRowKeys.length}`);
-          setSelectedRowKeys([]);
+          modal.confirm({
+            title: '确认批量改 IP 的实际差异',
+            content: renderDiff(preview),
+            okText: '确认下发',
+            cancelText: '取消',
+            onOk: async () => {
+              const result = await window.electronAPI.rule.batchUpdateIP(
+                deviceId,
+                ruleIds,
+                newIp,
+                preview.token
+              );
+              if (!result.success) {
+                const detail = `${result.status}: ${result.message}${result.backupId ? '；备份 ' + result.backupId : ''}`;
+                message.error(detail);
+                throw new Error(detail);
+              }
+              await queryClient.invalidateQueries({ queryKey: ['rules'] });
+              if (result.status === 'unsaved') message.warning(result.message);
+              else message.success(result.message || '设备配置已回读核验');
+              setSelectedRowKeys([]);
+            },
+          });
         } catch (error) {
           message.error(`更新失败: ${getErrorMessage(error, t('common.error'))}`);
           return Promise.reject();
@@ -269,7 +330,7 @@ const Rules: React.FC = () => {
     try {
       await window.electronAPI.rule.batchUpdate(selectedRowKeys.map(String), { enabled: true });
       await queryClient.invalidateQueries({ queryKey: ['rules'] });
-      message.success(`${t('rules.enabled')} ${selectedRowKeys.length}`);
+      message.success(`本地待下发配置已设为启用：${selectedRowKeys.length} 条；设备需确认同步`);
       setSelectedRowKeys([]);
     } catch (error) {
       message.error(`启用失败: ${getErrorMessage(error, t('common.error'))}`);
@@ -285,7 +346,7 @@ const Rules: React.FC = () => {
     try {
       await window.electronAPI.rule.batchUpdate(selectedRowKeys.map(String), { enabled: false });
       await queryClient.invalidateQueries({ queryKey: ['rules'] });
-      message.success(`${t('rules.disabled')} ${selectedRowKeys.length}`);
+      message.success(`本地待下发配置已设为禁用：${selectedRowKeys.length} 条；设备需确认同步`);
       setSelectedRowKeys([]);
     } catch (error) {
       message.error(`禁用失败: ${getErrorMessage(error, t('common.error'))}`);
@@ -359,6 +420,11 @@ const Rules: React.FC = () => {
     <div>
       <Card>
         <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+          <Alert
+            type="info"
+            showIcon
+            message="这里的新增、编辑、删除先保存在本机，点击“下发到设备”并核验通过后才会在防火墙上生效。"
+          />
           <div
             style={{
               display: 'flex',
@@ -428,7 +494,16 @@ const Rules: React.FC = () => {
             <Button
               size="small"
               icon={<SyncOutlined />}
-              onClick={() => activeDeviceId && syncFromDeviceMutation.mutate(activeDeviceId)}
+              onClick={() =>
+                activeDeviceId &&
+                modal.confirm({
+                  title: '从设备读取规则？',
+                  content:
+                    '本地列表会更新为设备上的规则，尚未下发的修改会被覆盖；本地已禁用的规则会保留。',
+                  okText: '读取',
+                  onOk: () => syncFromDeviceMutation.mutateAsync(activeDeviceId),
+                })
+              }
               loading={syncFromDeviceMutation.isPending}
               disabled={!activeDeviceId}
             >
@@ -437,21 +512,31 @@ const Rules: React.FC = () => {
             <Button
               size="small"
               icon={<SyncOutlined />}
-              onClick={() => {
-                if (!activeDeviceId) {
-                  return;
-                }
-                modal.confirm({
-                  title: t('rules.syncToDevice'),
-                  content: t('rules.syncToDevice'),
-                  okText: t('common.confirm'),
-                  okType: 'primary',
-                  cancelText: t('common.cancel'),
-                  onOk: () => {
-                    syncToDeviceMutation.mutate(activeDeviceId);
-                  },
-                });
-              }}
+              onClick={() =>
+                void (async () => {
+                  if (!activeDeviceId) {
+                    return;
+                  }
+                  try {
+                    const preview = await window.electronAPI.rule.previewSync(activeDeviceId);
+                    modal.confirm({
+                      title: t('rules.syncToDevice'),
+                      content: renderDiff(preview),
+                      okText: t('common.confirm'),
+                      okType: 'primary',
+                      cancelText: t('common.cancel'),
+                      onOk: () => {
+                        return syncToDeviceMutation.mutateAsync({
+                          deviceId: activeDeviceId,
+                          token: preview.token,
+                        });
+                      },
+                    });
+                  } catch (error) {
+                    message.error(getErrorMessage(error, '读取同步差异失败'));
+                  }
+                })()
+              }
               loading={syncToDeviceMutation.isPending}
               disabled={!activeDeviceId}
             >
@@ -555,7 +640,7 @@ const Rules: React.FC = () => {
             dataSource={filteredRules}
             loading={isLoading}
             rowKey="id"
-            pagination={createTablePagination(10, t('common.info'))}
+            pagination={createTablePagination(10, '条')}
           />
         </Space>
       </Card>

@@ -2,6 +2,8 @@ import React from 'react';
 import { Card, Col, Row, Statistic } from 'antd';
 import {
   CheckCircleOutlined,
+  PauseCircleOutlined,
+  QuestionCircleOutlined,
   DatabaseOutlined,
   SafetyOutlined,
   SettingOutlined,
@@ -13,21 +15,37 @@ interface SettingsOverviewStatsProps {
   databaseInfo: SettingsDatabaseInfo;
   formValues: SettingsSummaryValues;
   t: SettingsTranslation;
+  monitorRunning?: boolean;
 }
 
 const SettingsOverviewStats: React.FC<SettingsOverviewStatsProps> = ({
   databaseInfo,
   formValues,
   t,
+  monitorRunning,
 }) => (
   <Row gutter={[16, 16]} style={{ marginBottom: 24 }}>
     <Col xs={24} sm={12} lg={6}>
       <Card>
         <Statistic
-          title={t('settings.serviceStatus')}
-          value={t('settings.running')}
-          prefix={<CheckCircleOutlined />}
-          valueStyle={{ fontSize: 16, color: '#52c41a' }}
+          title="应用内监控状态"
+          value={
+            monitorRunning === undefined
+              ? '状态未知'
+              : monitorRunning
+                ? t('settings.running')
+                : '已停止'
+          }
+          prefix={
+            monitorRunning === undefined ? (
+              <QuestionCircleOutlined />
+            ) : monitorRunning ? (
+              <CheckCircleOutlined />
+            ) : (
+              <PauseCircleOutlined />
+            )
+          }
+          valueStyle={{ fontSize: 16, color: monitorRunning === true ? '#52c41a' : '#8c8c8c' }}
         />
       </Card>
     </Col>
