@@ -15,6 +15,7 @@ import {
   usgParser,
   type ParsedNatRule,
 } from '../../services/usg-parser';
+import { deviceRuleSnapshots } from '../../services/device-rule-snapshots';
 import {
   assertBatchUpdateIPInput,
   getRuleIdsOutsideDevice,
@@ -24,6 +25,7 @@ import {
   equalDeviceRules,
   getBatchIPTarget,
   splitSaveCommands,
+  compareLocalWithDevice,
 } from './rule-handler-helpers';
 import { assertSupportedDeviceAccess } from './shared';
 
@@ -37,6 +39,7 @@ type RuleWritePayload = {
   enabled: boolean;
   description?: string | null;
   noReverse?: boolean | null;
+  unrRoute?: boolean | null;
 };
 type RuleUpdatePayload = Partial<RuleWritePayload>;
 const assertRulePayload = (rule: RuleUpdatePayload) => {
@@ -55,6 +58,7 @@ const assertRulePayload = (rule: RuleUpdatePayload) => {
           'enabled',
           'description',
           'noReverse',
+          'unrRoute',
         ].includes(key)
     )
   )
@@ -102,7 +106,9 @@ const readDeviceRules = async (device: Device): Promise<ParsedNatRule[]> => {
     'display current-configuration | include nat server'
   );
   if (!result.success) throw new Error('设备配置读取失败: ' + (result.error || '未知错误'));
-  return usgParser.parseNatServerSnapshot(result.output, result.complete === true);
+  const rules = usgParser.parseNatServerSnapshot(result.output, result.complete === true);
+  deviceRuleSnapshots.set(device.id, deviceIdentity(device), rules);
+  return rules;
 };
 const withDevice = async <T>(
   deviceId: string,
@@ -160,6 +166,8 @@ const writeDevice = async (
     backup: () => backupDevice(device, before),
     execute: async () => {
       await ensureConnected(device);
+      // From here the cached snapshot may be wrong until the verification read replaces it.
+      deviceRuleSnapshots.invalidate(device.id);
       return sshManager.executeBatchCommands(device.id, splitSaveCommands(commands));
     },
     read: () => readDeviceRules(device),
@@ -171,6 +179,7 @@ const writeDevice = async (
       const restore = splitSaveCommands(usgParser.generateSyncToDeviceCommands(actual, before));
       if (!restore.length) return { success: true };
       await ensureConnected(device);
+      deviceRuleSnapshots.invalidate(device.id);
       return sshManager.executeBatchCommands(device.id, restore);
     },
   });
@@ -239,6 +248,31 @@ export function registerRuleHandlers() {
       return saved;
     })
   );
+  // Read-only: compares the saved rules with the device without changing either side.
+  guardedHandle('rule:compareWithDevice', async (_event, deviceId: string, refresh?: boolean) => {
+    const compare = async (rules: ParsedNatRule[], readAt: number) => {
+      const localRules = (await prisma.natRule.findMany({ where: { deviceId } })).map((rule) => ({
+        ...toParsedRule(rule),
+        id: rule.id,
+      }));
+      return {
+        readAt: new Date(readAt).toISOString(),
+        ...compareLocalWithDevice(rules, localRules),
+      };
+    };
+    const device = await prisma.device.findUnique({ where: { id: deviceId } });
+    if (!device) throw new Error('设备不存在');
+    const cached = refresh
+      ? undefined
+      : deviceRuleSnapshots.getFresh(deviceId, deviceIdentity(device));
+    if (cached) return compare(cached.rules, cached.readAt);
+    // A failed read must not leave an older snapshot that a later call would report as current.
+    deviceRuleSnapshots.invalidate(deviceId);
+    return withDevice(deviceId, async (current) => {
+      const rules = await readDeviceRules(current);
+      return compare(rules, Date.now());
+    });
+  });
   guardedHandle('rule:previewSync', async (_event, deviceId: string) =>
     withDevice(deviceId, async (device) => {
       const deviceRules = await readDeviceRules(device);
@@ -331,15 +365,15 @@ export function registerRuleHandlers() {
               localOnlyCount: rules.length - enabled.length,
             };
           }
-          try {
-            if (result.status === 'verified')
-              await notifier.notifyUpdateSuccess(device.name, enabled.length);
-          } catch (error) {
-            await logger.warning('规则通知', '配置已核验，但通知发送失败', {
-              deviceId,
-              error: error instanceof Error ? error.message : String(error),
-            });
-          }
+          // Sent in the background: a slow SMTP server must not hold the device lock or
+          // keep the UI waiting after the change is already verified.
+          if (result.status === 'verified')
+            void notifier.notifyUpdateSuccess(device.name, enabled.length, newIP).catch((error) =>
+              logger.warning('规则通知', '配置已核验，但通知发送失败', {
+                deviceId,
+                error: error instanceof Error ? error.message : String(error),
+              })
+            );
         }
         return {
           ...result,
@@ -355,13 +389,19 @@ export function registerRuleHandlers() {
       const candidate = {
         ...rule,
         noReverse: rule.noReverse ?? false,
+        unrRoute: rule.unrRoute ?? false,
         description: rule.description ?? undefined,
       };
       usgParser.assertWritableNatRule(candidate);
       const others = await prisma.natRule.findMany({ where: { deviceId } });
       assertNoNatEndpointConflicts([...others.map(toParsedRule), candidate], [candidate]);
       const saved = await prisma.natRule.create({
-        data: { ...rule, noReverse: rule.noReverse ?? undefined, deviceId },
+        data: {
+          ...rule,
+          noReverse: rule.noReverse ?? undefined,
+          unrRoute: rule.unrRoute ?? undefined,
+          deviceId,
+        },
       });
       await logger.info('本地规则', '规则已保存为待下发配置', {
         deviceId,
@@ -379,13 +419,18 @@ export function registerRuleHandlers() {
         ...existing,
         ...rule,
         noReverse: rule.noReverse ?? existing.noReverse,
+        unrRoute: rule.unrRoute ?? existing.unrRoute,
       });
       usgParser.assertWritableNatRule(candidate);
       const others = await prisma.natRule.findMany({ where: { deviceId, id: { not: id } } });
       assertNoNatEndpointConflicts([...others.map(toParsedRule), candidate], [candidate]);
       const saved = await prisma.natRule.update({
         where: { id },
-        data: { ...rule, noReverse: rule.noReverse ?? undefined },
+        data: {
+          ...rule,
+          noReverse: rule.noReverse ?? undefined,
+          unrRoute: rule.unrRoute ?? undefined,
+        },
       });
       await logger.info('本地规则', '规则修改已保存为待下发配置', { ruleId: id });
       return saved;

@@ -70,6 +70,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     getTotalCount: () => ipcRenderer.invoke('rule:getTotalCount'),
     syncFromDevice: (deviceId: string) => ipcRenderer.invoke('rule:syncFromDevice', deviceId),
     previewSync: (deviceId: string) => ipcRenderer.invoke('rule:previewSync', deviceId),
+    compareWithDevice: (deviceId: string, refresh?: boolean) =>
+      ipcRenderer.invoke('rule:compareWithDevice', deviceId, refresh),
     syncToDevice: (deviceId: string, token?: string) =>
       ipcRenderer.invoke('rule:syncToDevice', deviceId, token),
     previewBatchUpdateIP: (deviceId: string, ruleIds: string[], newIP: string) =>

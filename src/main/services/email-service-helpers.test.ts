@@ -12,7 +12,7 @@ import {
 
 const createConfig = (overrides: Partial<SMTPConfig> = {}): SMTPConfig => ({
   enabled: true,
-  host: 'smtp.example.com',
+  host: 'smtp.qq.com',
   port: 465,
   secure: true,
   auth: {
@@ -75,7 +75,7 @@ const PRODUCTION_TIMEOUTS = {
 
 test('createBaseTransportConfig builds the shared SMTP transport shape', () => {
   assert.deepEqual(createBaseTransportConfig(createConfig()), {
-    host: 'smtp.example.com',
+    host: 'smtp.qq.com',
     port: 465,
     secure: true,
     ...PRODUCTION_TIMEOUTS,
@@ -95,7 +95,7 @@ test('createBaseTransportConfig requires STARTTLS by default and never forwards 
       })
     ),
     {
-      host: 'smtp.example.com',
+      host: 'smtp.qq.com',
       port: 465,
       secure: false,
       requireTLS: true,
@@ -115,7 +115,7 @@ test('createBaseTransportConfig requires STARTTLS by default and never forwards 
       })
     ),
     {
-      host: 'smtp.example.com',
+      host: 'smtp.qq.com',
       port: 465,
       secure: false,
       ...PRODUCTION_TIMEOUTS,
@@ -131,7 +131,7 @@ test('createBaseTransportConfig requires STARTTLS by default and never forwards 
 
 test('createTestTransportConfig extends the base transport config with safe timeouts', () => {
   assert.deepEqual(createTestTransportConfig(createConfig()), {
-    host: 'smtp.example.com',
+    host: 'smtp.qq.com',
     port: 465,
     secure: true,
     auth: {
@@ -165,4 +165,42 @@ test('getEmailErrorInfo extracts known fields from unknown error values', () => 
     code: undefined,
     command: undefined,
   });
+});
+
+test('SMTP failures are explained by nodemailer code as well as message', async () => {
+  const { getFriendlyEmailError } = await import('./email-service-helpers.ts');
+  assert.match(getFriendlyEmailError({ message: '535 Login fail', code: 'EAUTH' }), /授权码/);
+  assert.match(getFriendlyEmailError({ message: 'Greeting never received' }), /465/);
+  assert.match(getFriendlyEmailError({ message: 'getaddrinfo ENOTFOUND smtp.x' }), /找不到/);
+  assert.equal(getFriendlyEmailError({ message: 'something else' }), 'something else');
+});
+
+test('the nodemailer code wins over words in the server reply', async () => {
+  const { getFriendlyEmailError } = await import('./email-service-helpers.ts');
+  assert.match(
+    getFriendlyEmailError({
+      message: '530 Must issue a STARTTLS command first',
+      code: 'EENVELOPE',
+    }),
+    /拒收/
+  );
+  assert.match(
+    getFriendlyEmailError({ message: 'Failed to upgrade', code: 'ETLS' }),
+    /不支持 STARTTLS/
+  );
+  assert.match(getFriendlyEmailError({ message: 'Authentication unsuccessful' }), /授权码/);
+});
+
+test('a saved placeholder SMTP host is reported as a configuration error', async () => {
+  const { getSMTPConfigValidationError } = await import('./email-service-helpers.ts');
+  const error = getSMTPConfigValidationError({
+    enabled: true,
+    host: 'smtp.example.com',
+    port: 465,
+    secure: true,
+    auth: { user: 'u', pass: 'p' },
+    from: { name: 'n', address: 'a@b.cn' },
+    to: ['x@y.cn'],
+  });
+  assert.match(error ?? '', /示例地址/);
 });

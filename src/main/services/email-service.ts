@@ -4,6 +4,7 @@ import {
   createBaseTransportConfig,
   createTestTransportConfig,
   getEmailErrorInfo,
+  getFriendlyEmailError,
   getSMTPConfigValidationError,
   normalizeNotifyTypes,
 } from './email-service-helpers';
@@ -12,6 +13,10 @@ import { logger } from './logger';
 /**
  * HTML 转义函数，防止 XSS 攻击
  */
+// Subjects are plain text: HTML escaping would show "&amp;" literally; only line breaks are
+// unsafe there.
+const subjectText = (text: string): string => text.replace(/[\r\n]+/g, ' ');
+
 function escapeHtml(text: string): string {
   const map: Record<string, string> = {
     '&': '&amp;',
@@ -109,10 +114,16 @@ class EmailService {
       await logger.warning('邮件服务', '邮件服务未启用或未配置');
       return false;
     }
+    const invalid = getSMTPConfigValidationError(this.config);
+    if (invalid) {
+      // Report the configuration problem instead of a DNS failure on every notification.
+      await logger.error('邮件服务', '邮件未发送：' + invalid, { subject: options.subject });
+      return false;
+    }
 
     try {
       const mailOptions = {
-        from: `"${this.config.from.name}" <${this.config.from.address}>`,
+        from: { name: this.config.from.name, address: this.config.from.address },
         to: this.config.to.join(', '),
         subject: options.subject,
         text: options.text,
@@ -125,9 +136,10 @@ class EmailService {
       });
       return true;
     } catch (error: unknown) {
-      const { message } = getEmailErrorInfo(error);
+      const info = getEmailErrorInfo(error);
       await logger.error('邮件服务', '邮件发送失败', {
-        error: message,
+        error: getFriendlyEmailError(info),
+        detail: info.message,
         subject: options.subject,
       });
       return false;
@@ -186,12 +198,12 @@ class EmailService {
         await logger.error('邮件服务', 'SMTP 连接验证失败', {
           error: message,
         });
-        throw new Error(`SMTP 连接失败: ${message}`);
+        throw new Error(getFriendlyEmailError(getEmailErrorInfo(verifyError)));
       }
 
       // 构建邮件内容
       const mailOptions = {
-        from: `"${config.from.name || 'USG NAT管理系统'}" <${config.from.address}>`,
+        from: { name: config.from.name || 'USG NAT管理系统', address: config.from.address },
         to: config.to.join(', '),
         subject: '✅ 测试邮件 - USG NAT管理系统',
         html: `
@@ -294,35 +306,11 @@ class EmailService {
 
       await logger.error('邮件服务', '测试邮件发送失败', errorDetails);
 
-      // 提供更友好的错误信息
-      let friendlyError = errorMessage;
-      if (errorMessage.includes('EAUTH') || errorMessage.includes('authentication')) {
-        friendlyError =
-          '❌ 认证失败\n请检查用户名和密码是否正确\n⚠️ QQ/163邮箱必须使用授权码，不是登录密码！';
-      } else if (errorMessage.includes('ECONNECTION') || errorMessage.includes('ETIMEDOUT')) {
-        friendlyError =
-          '❌ 连接超时\n请检查:\n1. SMTP 服务器地址是否正确\n2. 端口号是否正确\n3. 网络连接是否正常';
-      } else if (errorMessage.includes('ENOTFOUND')) {
-        friendlyError =
-          '❌ SMTP 服务器不存在\n请检查服务器地址是否正确\n⚠️ 不要使用 smtp.example.com，要用真实的邮箱服务器\n✅ 例如: smtp.qq.com, smtp.163.com, smtp.gmail.com';
-      } else if (
-        errorMessage.includes('certificate') ||
-        errorMessage.includes('TLS') ||
-        errorMessage.includes('SSL')
-      ) {
-        friendlyError =
-          '❌ SSL/TLS 连接失败\n请检查:\n1. 端口是否正确 (QQ邮箱用465)\n2. 服务器地址是否正确 (不要用smtp.example.com)\n3. 加密方式: 465端口用SSL，587端口用STARTTLS';
-      } else if (errorMessage.includes('Greeting never received')) {
-        friendlyError =
-          '❌ 服务器无响应\n可能原因:\n1. 端口错误\n2. 防火墙阻止了连接\n3. SMTP服务器地址错误';
-      } else if (
-        errorMessage.includes('socket disconnected') ||
-        errorMessage.includes('network socket')
-      ) {
-        friendlyError =
-          '❌ 网络连接断开\n请检查:\n1. SMTP 服务器地址是否正确 (不要用smtp.example.com)\n2. 端口是否正确 (QQ邮箱用465)\n3. 网络是否正常\n✅ QQ邮箱配置: smtp.qq.com:465';
-      }
-
+      // Verification failures are already translated; translate send failures the same way.
+      const friendlyError =
+        error instanceof Error && errorMessage === error.message && !code
+          ? errorMessage
+          : getFriendlyEmailError({ message: errorMessage, code });
       throw new Error(friendlyError);
     } finally {
       transporter?.close();
@@ -382,7 +370,7 @@ class EmailService {
     }
 
     return await this.sendEmail({
-      subject: `【成功】${escapeHtml(deviceName)} NAT规则更新完成`,
+      subject: `【成功】${subjectText(deviceName)} NAT规则更新完成`,
       html: `
         <h2>NAT规则更新成功</h2>
         <p>设备 <strong>${escapeHtml(deviceName)}</strong> 的NAT规则已成功更新。</p>
@@ -424,7 +412,7 @@ class EmailService {
     }
 
     return await this.sendEmail({
-      subject: `【失败】${escapeHtml(deviceName)} NAT规则更新失败`,
+      subject: `【失败】${subjectText(deviceName)} NAT规则更新失败`,
       html: `
         <h2 style="color: #f44336;">NAT规则更新失败</h2>
         <p>设备 <strong>${escapeHtml(deviceName)}</strong> 的NAT规则更新失败。</p>
@@ -462,7 +450,7 @@ class EmailService {
     }
 
     return await this.sendEmail({
-      subject: `【警告】设备 ${escapeHtml(deviceName)} 连接失败`,
+      subject: `【警告】设备 ${subjectText(deviceName)} 连接失败`,
       html: `
         <h2 style="color: #FF9800;">设备连接失败</h2>
         <p>无法连接到设备 <strong>${escapeHtml(deviceName)}</strong>。</p>

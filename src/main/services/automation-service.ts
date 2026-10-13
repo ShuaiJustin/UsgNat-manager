@@ -7,6 +7,7 @@ import path from 'path';
 import { ipMonitor, IPChangeEvent, type IPMonitorConfig } from './ip-monitor';
 import { sshManager, type SSHConfig } from './ssh-manager';
 import { usgParser, type ParsedNatRule } from './usg-parser';
+import { deviceRuleSnapshots } from './device-rule-snapshots';
 import { logger } from './logger';
 import { notifier } from './notifier';
 import { credentialManager } from './credential-manager';
@@ -44,10 +45,12 @@ type RuleSnapshot = Omit<
     | 'insidePort'
     | 'enabled'
     | 'noReverse'
+    | 'unrRoute'
   >,
-  'noReverse'
+  'noReverse' | 'unrRoute'
 > & {
   noReverse?: boolean | null;
+  unrRoute?: boolean | null;
   addSyntax?: ParsedNatRule['addSyntax'];
 };
 
@@ -93,6 +96,7 @@ const CONFIRM_TIMEOUT_BACKOFF_BASE_MS = 5 * 60 * 1000;
 const CONFIRM_TIMEOUT_BACKOFF_MAX_MS = 60 * 60 * 1000;
 // Even with an unchanged IP, devices are re-read periodically so manual drift gets repaired.
 const APPLIED_STATE_MAX_AGE_MS = 60 * 60 * 1000;
+export const INTERFACE_ADDRESS_COMMAND = 'display ip interface brief | include /';
 const MAX_CONSECUTIVE_FAILURES = 5;
 
 export interface AutomationConfig {
@@ -700,6 +704,7 @@ class AutomationService extends EventEmitter {
         usgParser
       );
 
+      deviceRuleSnapshots.invalidate(deviceId);
       const rollbackResult = await sshManager.executeBatchCommands(deviceId, commands);
       if (!rollbackResult.success) {
         throw new Error(`回滚命令执行失败: ${rollbackResult.error || '未知错误'}`);
@@ -723,7 +728,8 @@ class AutomationService extends EventEmitter {
           restoredRule.globalPort !== oldRule.globalPort ||
           restoredRule.insidePort !== oldRule.insidePort ||
           restoredRule.protocol !== oldRule.protocol ||
-          Boolean(restoredRule.noReverse) !== Boolean(oldRule.noReverse)
+          Boolean(restoredRule.noReverse) !== Boolean(oldRule.noReverse) ||
+          Boolean(restoredRule.unrRoute) !== Boolean(oldRule.unrRoute)
         ) {
           throw new Error(`规则 ${oldRule.ruleName} 回滚未通过验证`);
         }
@@ -966,7 +972,8 @@ class AutomationService extends EventEmitter {
         // The detected IP is this client's egress. It is only the firewall's public IP when the
         // firewall itself holds it (dialer/WAN interface); a VPN, proxy or another network on the
         // client must never be written into NAT rules.
-        const interfaces = await sshManager.executeCommand(deviceId, 'display ip interface brief');
+        // Only lines carrying "address/mask" matter; executeCommand turns paging off first.
+        const interfaces = await sshManager.executeCommand(deviceId, INTERFACE_ADDRESS_COMMAND);
         if (!interfaces.success || !interfaces.complete)
           throw new Error(
             `无法读取设备接口地址，已阻止写入：${interfaces.error || 'SSH命令执行失败（未返回原因）'}`
@@ -1041,7 +1048,8 @@ class AutomationService extends EventEmitter {
           actual.insideIp !== rule.insideIp ||
           actual.insidePort !== rule.insidePort ||
           actual.protocol !== rule.protocol ||
-          Boolean(actual.noReverse) !== Boolean(rule.noReverse)
+          Boolean(actual.noReverse) !== Boolean(rule.noReverse) ||
+          Boolean(actual.unrRoute) !== Boolean(rule.unrRoute)
         ) {
           throw new Error('确认或备份期间设备受管规则已变化，请重新对账确认');
         }
@@ -1078,6 +1086,8 @@ class AutomationService extends EventEmitter {
 
       // SSH batches can partially apply; failed results remain unknown until another read.
       writeAttempted = true;
+      // The rules page must re-read this device; its cached snapshot is about to be wrong.
+      deviceRuleSnapshots.invalidate(deviceId);
       const executeResult = await sshManager.executeBatchCommands(deviceId, commands);
 
       if (!executeResult.success) {

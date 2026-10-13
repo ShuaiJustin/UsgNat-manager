@@ -10,6 +10,7 @@ export interface NatRule {
   enabled: boolean;
   description?: string;
   noReverse: boolean;
+  unrRoute: boolean;
   createdAt: Date;
   updatedAt: Date;
 }

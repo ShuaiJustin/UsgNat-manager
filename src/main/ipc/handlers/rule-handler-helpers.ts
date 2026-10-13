@@ -54,7 +54,11 @@ export const replaceDeviceRuleSnapshot = async (
     const saved = [];
     for (const [index, rule] of rules.entries()) {
       const { addSyntax: _addSyntax, ...values } = rule;
-      const data = { ...values, noReverse: values.noReverse ?? false };
+      const data = {
+        ...values,
+        noReverse: values.noReverse ?? false,
+        unrRoute: values.unrRoute ?? false,
+      };
       saved.push(
         await tx.natRule.upsert({
           where: matches[index]
@@ -76,6 +80,7 @@ const canonicalRule = (rule: ParsedNatRule) => [
   rule.insideIp,
   rule.insidePort,
   Boolean(rule.noReverse),
+  Boolean(rule.unrRoute),
 ];
 const canonicalRules = (rules: ParsedNatRule[]) =>
   rules
@@ -86,7 +91,7 @@ const canonicalRules = (rules: ParsedNatRule[]) =>
 export const equalDeviceRules = (left: ParsedNatRule[], right: ParsedNatRule[]) =>
   JSON.stringify(canonicalRules(left)) === JSON.stringify(canonicalRules(right));
 const describeRule = (rule: ParsedNatRule) =>
-  `${rule.ruleName}: ${rule.protocol} ${rule.globalIp}:${rule.globalPort} → ${rule.insideIp}:${rule.insidePort}${rule.noReverse ? ' no-reverse' : ''}`;
+  `${rule.ruleName}: ${rule.protocol} ${rule.globalIp}:${rule.globalPort} → ${rule.insideIp}:${rule.insidePort}${rule.noReverse ? ' no-reverse' : ''}${rule.unrRoute ? ' unr-route' : ''}`;
 
 export const getBatchIPTarget = (
   before: ParsedNatRule[],
@@ -107,8 +112,16 @@ export const getBatchIPTarget = (
       endpointIndex >= 0
         ? endpointIndex
         : result.findIndex((candidate) => candidate.ruleName === rule.ruleName);
+    const onDevice = index >= 0 ? result[index] : undefined;
     if (index >= 0) result.splice(index, 1);
-    result.push({ ...rule, globalIp: newIP });
+    // Mirrors generateBatchUpdateIPCommands: options are kept as the device has them.
+    result.push({
+      ...rule,
+      globalIp: newIP,
+      ...(onDevice
+        ? { noReverse: Boolean(onDevice.noReverse), unrRoute: Boolean(onDevice.unrRoute) }
+        : {}),
+    });
   }
   return result;
 };
@@ -293,3 +306,43 @@ export const getRuleIdsOutsideDevice = (
   rules: readonly RuleDeviceLike[],
   deviceId: string
 ): string[] => rules.filter((rule) => rule.deviceId !== deviceId).map((rule) => rule.id);
+
+export type RuleSyncState =
+  | 'synced'
+  | 'pendingAdd'
+  | 'pendingChange'
+  | 'pendingRemove'
+  | 'localDisabled';
+
+// Classifies each saved rule against a fresh device read, using the same keys and equality as
+// the sync preview so the page and "push to device" always agree. O(local + device).
+export const compareLocalWithDevice = <T extends ParsedNatRule & { id: string }>(
+  deviceRules: ParsedNatRule[],
+  localRules: T[]
+): { states: Record<string, RuleSyncState>; deviceOnly: ParsedNatRule[] } => {
+  const device = new Map(deviceRules.map((rule) => [syncRuleKey(rule), rule]));
+  const matched = new Set<string>();
+  const states: Record<string, RuleSyncState> = {};
+  // A disabled rule only asks for removal when no enabled local rule keeps the same key, as the
+  // push itself only considers enabled rules.
+  const enabledKeys = new Set(localRules.filter((rule) => rule.enabled).map(syncRuleKey));
+  for (const rule of localRules) {
+    const key = syncRuleKey(rule);
+    const onDevice = device.get(key);
+    if (onDevice) matched.add(key);
+    states[rule.id] = !rule.enabled
+      ? onDevice && !enabledKeys.has(key)
+        ? 'pendingRemove'
+        : 'localDisabled'
+      : !onDevice
+        ? 'pendingAdd'
+        : equalDeviceRules([rule], [onDevice])
+          ? 'synced'
+          : 'pendingChange';
+  }
+  return {
+    states,
+    // On the device but not saved here: removed locally, or added directly on the firewall.
+    deviceOnly: [...device].filter(([key]) => !matched.has(key)).map(([, rule]) => rule),
+  };
+};

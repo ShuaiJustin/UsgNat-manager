@@ -1,4 +1,4 @@
-import { app, BrowserWindow, powerMonitor } from 'electron';
+import { app, BrowserWindow, dialog, powerMonitor } from 'electron';
 import path from 'path';
 
 import { DEFAULT_IP_CHECK_SOURCES } from './ip-check-sources';
@@ -194,8 +194,14 @@ if (!gotTheLock) {
   app.whenReady().then(async () => {
     try {
       await databaseService.initialize();
-    } catch {
-      // Keep app bootable even if the database initialization fails.
+    } catch (error) {
+      // Keep the app bootable, but say why rules and settings will not work.
+      dialog.showErrorBox(
+        '数据库初始化失败',
+        `${error instanceof Error ? error.message : String(error)}
+
+规则和设置功能可能无法使用，请关闭其他占用数据库的程序后重启软件。`
+      );
     }
 
     app.setName('华为USG防火墙NAT管理软件');

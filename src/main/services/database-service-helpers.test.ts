@@ -15,26 +15,26 @@ test('DATABASE_SETUP_STATEMENTS covers core tables and indexes', () => {
   );
 });
 
-test('buildNatRuleMigrationStatements adds noReverse when the column is missing', () => {
+test('buildNatRuleMigrationStatements adds missing option columns', () => {
   assert.deepEqual(buildNatRuleMigrationStatements([{ name: 'id' }, { name: 'ruleName' }]), [
     'ALTER TABLE "nat_rules" ADD COLUMN "noReverse" INTEGER NOT NULL DEFAULT 0',
+    'ALTER TABLE "nat_rules" ADD COLUMN "unrRoute" INTEGER NOT NULL DEFAULT 0',
+  ]);
+  assert.deepEqual(buildNatRuleMigrationStatements([{ name: 'id' }, { name: 'noReverse' }]), [
+    'ALTER TABLE "nat_rules" ADD COLUMN "unrRoute" INTEGER NOT NULL DEFAULT 0',
   ]);
 });
 
-test('buildNatRuleMigrationStatements rebuilds nat_rules when unrRoute exists', () => {
-  const statements = buildNatRuleMigrationStatements([
-    { name: 'id' },
-    { name: 'noReverse' },
-    { name: 'unrRoute' },
-  ]);
-
-  assert.equal(statements.length, 4);
-  assert.ok(statements[0].includes('CREATE TABLE "nat_rules_new"'));
-  assert.ok(statements[1].includes('INSERT INTO "nat_rules_new"'));
-  assert.equal(statements[2], 'DROP TABLE "nat_rules"');
-  assert.equal(statements[3], 'ALTER TABLE "nat_rules_new" RENAME TO "nat_rules"');
+test('buildNatRuleMigrationStatements keeps an existing unrRoute column', () => {
+  // Only the NULL clean-up runs; the column is never dropped.
+  assert.deepEqual(
+    buildNatRuleMigrationStatements([{ name: 'id' }, { name: 'noReverse' }, { name: 'unrRoute' }]),
+    ['UPDATE "nat_rules" SET "unrRoute" = 0 WHERE "unrRoute" IS NULL']
+  );
 });
 
-test('buildNatRuleMigrationStatements is empty when no migration is needed', () => {
-  assert.deepEqual(buildNatRuleMigrationStatements([{ name: 'id' }, { name: 'noReverse' }]), []);
+test('an existing unrRoute column gets NULLs cleared', () => {
+  assert.deepEqual(buildNatRuleMigrationStatements([{ name: 'noReverse' }, { name: 'unrRoute' }]), [
+    'UPDATE "nat_rules" SET "unrRoute" = 0 WHERE "unrRoute" IS NULL',
+  ]);
 });

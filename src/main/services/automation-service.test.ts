@@ -108,7 +108,7 @@ function fixture(
     async disconnect() {},
     async executeCommand(_id: string, command: string) {
       reads.push(command);
-      if (command === 'display ip interface brief')
+      if (command === 'display ip interface brief | include /')
         return {
           success: true,
           complete: true,
@@ -265,6 +265,7 @@ GigabitEthernet0/0/1 192.168.1.1/24 up up`,
       },
     },
     './automation-service-helpers': helpers,
+    './device-rule-snapshots': { deviceRuleSnapshots: { invalidate() {} } },
     './mandatory-update-business-gate': { mandatoryUpdateBusinessGate: gate },
     '../ip-check-sources': { DEFAULT_IP_CHECK_SOURCES: ['test'] },
   };
@@ -1008,7 +1009,7 @@ test('a detected IP that the firewall does not hold on any interface is never wr
   await f.service.start(f.config);
   await f.drain();
   assert.equal(f.mutations.length, 0);
-  assert.ok(f.reads.includes('display ip interface brief'));
+  assert.ok(f.reads.includes('display ip interface brief | include /'));
   await f.service.stop();
 });
 

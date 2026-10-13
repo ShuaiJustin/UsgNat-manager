@@ -264,3 +264,37 @@ export const isBenignSshDisconnectError = (error: Error): boolean => {
     code === 'ECONNRESET' || BENIGN_DISCONNECT_PATTERNS.some((pattern) => pattern.test(message))
   );
 };
+
+export const DISABLE_PAGING_COMMAND = 'screen-length 0 temporary';
+
+export type CommandStage =
+  | 'opening'
+  | 'reconnecting'
+  | 'waiting-prompt'
+  | 'disabling-pager'
+  | 'running';
+
+const STAGE_DESCRIPTIONS: Record<CommandStage, string> = {
+  opening: '设备未打开命令会话，可能是 VTY 登录数已满',
+  reconnecting: '会话打不开，重新连接设备时超时',
+  'waiting-prompt': '一直没等到设备命令提示符',
+  'disabling-pager': '关闭分页时设备未返回提示符',
+  running: '命令已发送，但未等到执行完成',
+};
+
+// Says where a single command stalled. Device output is deliberately not included: a stalled
+// configuration read can end on lines holding password hashes or pre-shared keys.
+export const describeCommandTimeout = (state: {
+  stage: CommandStage;
+  receivedBytes: number;
+  pagerPages: number;
+  confirmationPending: boolean;
+}): string => {
+  const details = [
+    STAGE_DESCRIPTIONS[state.stage],
+    state.confirmationPending ? '设备正在等待 [Y/N] 确认' : '',
+    state.pagerPages ? `已翻页 ${state.pagerPages} 次` : '',
+    `共收到 ${state.receivedBytes} 字节`,
+  ].filter(Boolean);
+  return `命令执行超时（${details.join('；')}）`;
+};

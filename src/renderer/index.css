@@ -146,3 +146,8 @@ body {
 .title-bar-button:hover svg {
   transform: scale(1.1);
 }
+
+/* Rules that differ from the device until pushed. */
+.rule-row-pending > td {
+  background: #fffbe6;
+}

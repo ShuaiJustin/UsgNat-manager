@@ -17,4 +17,5 @@ export const DEFAULT_AUTOMATION_FORM_VALUES = {
   notifyTypes: ['ipChange', 'updateSuccess', 'updateFailed'],
   smtpEncryption: 'ssl',
   smtpPort: '465',
+  emailNotifyTypes: ['ipChange', 'updateSuccess', 'updateFailed'],
 };

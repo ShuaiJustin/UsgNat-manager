@@ -88,3 +88,22 @@ test('shows rule batch actions only when at least one row is selected', () => {
   assert.equal(shouldShowRuleBatchActions(0), false);
   assert.equal(shouldShowRuleBatchActions(1), true);
 });
+
+test('pending changes count everything a push would change on the device', async () => {
+  const { countPendingChanges, isPendingState } = await import('./rulePageHelpers.ts');
+  assert.equal(
+    countPendingChanges({
+      states: {
+        a: 'synced',
+        b: 'pendingAdd',
+        c: 'pendingChange',
+        d: 'pendingRemove',
+        e: 'localDisabled',
+      },
+      deviceOnly: [{}],
+    }),
+    4
+  );
+  assert.equal(isPendingState('localDisabled'), false);
+  assert.equal(isPendingState('deviceOnly'), true);
+});

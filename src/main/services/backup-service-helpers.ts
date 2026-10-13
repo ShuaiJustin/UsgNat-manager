@@ -36,7 +36,15 @@ export async function replaceBackupData(client: PrismaClient, data: BackupData):
 type RecordValue = Record<string, unknown>;
 const record = (value: unknown): value is RecordValue =>
   value !== null && typeof value === 'object' && !Array.isArray(value);
-type FieldType = 'string' | 'nullableString' | 'boolean' | 'port' | 'date' | 'nullableDate';
+type FieldType =
+  | 'string'
+  | 'nullableString'
+  | 'boolean'
+  // Added after older backups were written; missing means false.
+  | 'optionalBoolean'
+  | 'port'
+  | 'date'
+  | 'nullableDate';
 const dates = { createdAt: 'date', updatedAt: 'date' } as const;
 const schemas: Record<keyof BackupData, Record<string, FieldType>> = {
   devices: {
@@ -63,6 +71,7 @@ const schemas: Record<keyof BackupData, Record<string, FieldType>> = {
     enabled: 'boolean',
     description: 'nullableString',
     noReverse: 'boolean',
+    unrRoute: 'optionalBoolean',
     ...dates,
   },
   logs: {
@@ -110,6 +119,10 @@ export function validateBackupPayload(payload: unknown): {
       const normalized: RecordValue = {};
       for (const [field, type] of Object.entries(schema)) {
         const value = row[field];
+        if (type === 'optionalBoolean' && value === undefined) {
+          normalized[field] = false;
+          continue;
+        }
         const nullable = type.startsWith('nullable');
         if (value === null && nullable) {
           normalized[field] = null;
@@ -117,7 +130,7 @@ export function validateBackupPayload(payload: unknown): {
         }
         let valid = false;
         if (type === 'string' || type === 'nullableString') valid = typeof value === 'string';
-        if (type === 'boolean') valid = typeof value === 'boolean';
+        if (type === 'boolean' || type === 'optionalBoolean') valid = typeof value === 'boolean';
         if (type === 'port')
           valid =
             typeof value === 'number' && Number.isInteger(value) && value > 0 && value <= 65535;

@@ -31,6 +31,7 @@ export const DATABASE_SETUP_STATEMENTS = [
       "enabled" INTEGER NOT NULL DEFAULT 1,
       "description" TEXT,
       "noReverse" INTEGER NOT NULL DEFAULT 0,
+      "unrRoute" INTEGER NOT NULL DEFAULT 0,
       "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
       "updatedAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY ("deviceId") REFERENCES "devices"("id") ON DELETE CASCADE,
@@ -81,46 +82,18 @@ export const DATABASE_SETUP_STATEMENTS = [
   `,
 ] as const;
 
+// Adds the option columns a NAT rule needs; existing rows default to "off".
 export const buildNatRuleMigrationStatements = (
   tableInfo: readonly TableColumnInfoLike[]
-): string[] => {
-  const hasNoReverse = tableInfo.some((column) => column.name === 'noReverse');
-  const hasUnrRoute = tableInfo.some((column) => column.name === 'unrRoute');
-  const statements: string[] = [];
+): string[] =>
+  ['noReverse', 'unrRoute']
+    .filter((column) => !tableInfo.some((info) => info.name === column))
+    .map((column) => `ALTER TABLE "nat_rules" ADD COLUMN "${column}" INTEGER NOT NULL DEFAULT 0`)
+    // A column left by an older version may allow NULL, which the client cannot read.
+    .concat(
+      tableInfo.some((info) => info.name === 'unrRoute')
+        ? ['UPDATE "nat_rules" SET "unrRoute" = 0 WHERE "unrRoute" IS NULL']
+        : []
+    );
 
-  if (!hasNoReverse) {
-    statements.push('ALTER TABLE "nat_rules" ADD COLUMN "noReverse" INTEGER NOT NULL DEFAULT 0');
-  }
-
-  if (hasUnrRoute) {
-    statements.push(`
-      CREATE TABLE "nat_rules_new" (
-        "id" TEXT NOT NULL PRIMARY KEY,
-        "deviceId" TEXT NOT NULL,
-        "ruleName" TEXT NOT NULL,
-        "protocol" TEXT NOT NULL,
-        "globalIp" TEXT NOT NULL,
-        "globalPort" TEXT NOT NULL,
-        "insideIp" TEXT NOT NULL,
-        "insidePort" TEXT NOT NULL,
-        "enabled" INTEGER NOT NULL DEFAULT 1,
-        "description" TEXT,
-        "noReverse" INTEGER NOT NULL DEFAULT 0,
-        "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-        "updatedAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY ("deviceId") REFERENCES "devices"("id") ON DELETE CASCADE,
-        UNIQUE("deviceId", "ruleName")
-      )
-    `);
-    statements.push(`
-      INSERT INTO "nat_rules_new"
-      SELECT id, deviceId, ruleName, protocol, globalIp, globalPort, insideIp, insidePort,
-             enabled, description, noReverse, createdAt, updatedAt
-      FROM "nat_rules"
-    `);
-    statements.push('DROP TABLE "nat_rules"');
-    statements.push('ALTER TABLE "nat_rules_new" RENAME TO "nat_rules"');
-  }
-
-  return statements;
-};
+export const REQUIRED_NAT_RULE_COLUMNS = ['noReverse', 'unrRoute'];

@@ -314,3 +314,43 @@ test('read-back decides: matching target is kept despite channel errors; unsaved
   assert.equal(lost.status, 'unknown');
   assert.match(lost.message, /已执行自动回滚/);
 });
+
+test('saved rules are classified against the device the same way a push would treat them', () => {
+  const device = [
+    { ...rule, ruleName: 'same' },
+    { ...rule, ruleName: 'changed', globalPort: '81' },
+    { ...rule, ruleName: 'disabledHere', globalPort: '82' },
+    { ...rule, ruleName: 'onlyOnDevice', globalPort: '83' },
+  ];
+  const local = [
+    { ...rule, id: '1', ruleName: 'same' },
+    { ...rule, id: '2', ruleName: 'changed', globalPort: '8081' },
+    { ...rule, id: '3', ruleName: 'disabledHere', globalPort: '82', enabled: false },
+    { ...rule, id: '4', ruleName: 'newRule', globalPort: '84' },
+    { ...rule, id: '5', ruleName: 'parked', globalPort: '85', enabled: false },
+  ];
+  const result = helpers.compareLocalWithDevice(device, local);
+  assert.deepEqual(result.states, {
+    '1': 'synced',
+    '2': 'pendingChange',
+    '3': 'pendingRemove',
+    '4': 'pendingAdd',
+    '5': 'localDisabled',
+  });
+  assert.deepEqual(
+    result.deviceOnly.map((item) => item.ruleName),
+    ['onlyOnDevice']
+  );
+});
+
+test('a disabled rule sharing a key with an enabled synced rule is not reported as pending', () => {
+  const live = { ...rule, ruleName: 'NAT_1.2.3.4_80_TCP' };
+  const result = helpers.compareLocalWithDevice(
+    [{ ...live, addSyntax: 'endpoint' as const }],
+    [
+      { ...live, id: 'on' },
+      { ...live, id: 'off', enabled: false, insideIp: '192.168.1.99' },
+    ]
+  );
+  assert.deepEqual(result.states, { on: 'synced', off: 'localDisabled' });
+});

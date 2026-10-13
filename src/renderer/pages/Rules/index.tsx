@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import { Alert, App, Button, Card, Input, Popconfirm, Select, Space, Table, Tag } from 'antd';
 import {
   DeleteOutlined,
@@ -14,14 +14,25 @@ import type { ColumnsType } from 'antd/es/table';
 import { useTranslation } from 'react-i18next';
 
 import type { Device, NatRule } from '@/types';
+import type { RuleComparison } from '@/types/electron';
 import { createTablePagination } from '@/utils/tablePagination';
 import RuleModal from './RuleModal';
 import {
   buildRulesCsv,
+  countPendingChanges,
+  isPendingState,
   resolveActiveRuleDeviceId,
   resolveCurrentRuleDevice,
   shouldShowRuleBatchActions,
+  SYNC_STATE_META,
+  type RuleRowSyncState,
 } from './rulePageHelpers';
+
+// A row is either a saved rule or a rule that only exists on the device.
+type RuleRow = NatRule & { syncState?: RuleRowSyncState; deviceOnly?: boolean };
+
+const formatReadTime = (iso?: string) =>
+  iso ? new Date(iso).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }) : '';
 
 const getErrorMessage = (error: unknown, fallback: string): string =>
   error instanceof Error ? error.message : fallback;
@@ -98,6 +109,31 @@ const Rules: React.FC = () => {
     retry: 2,
   });
 
+  const forceDeviceRead = useRef(false);
+  // The device is the reference: saved rules are compared with a recent device read. Reusing
+  // the read for two minutes keeps local edits from logging in to the firewall every time.
+  const {
+    data: comparison,
+    error: compareError,
+    isFetching: comparing,
+    refetch: refetchComparison,
+  } = useQuery<RuleComparison>({
+    queryKey: ['rules', 'compare', activeDeviceId],
+    queryFn: () => {
+      // "Re-read device" asks for one forced read; every other refetch may reuse the snapshot.
+      const refresh = forceDeviceRead.current;
+      forceDeviceRead.current = false;
+      return window.electronAPI.rule.compareWithDevice(activeDeviceId, refresh);
+    },
+    enabled: !!activeDeviceId && typeof window.electronAPI?.rule?.compareWithDevice === 'function',
+    retry: false,
+  });
+
+  const rereadDevice = async () => {
+    forceDeviceRead.current = true;
+    await refetchComparison();
+  };
+
   const syncFromDeviceMutation = useMutation({
     mutationFn: async (deviceId: string) => {
       const api = window.electronAPI;
@@ -137,6 +173,9 @@ const Rules: React.FC = () => {
         message.success(data.message || `${t('rules.syncSuccess')} ${data.syncedCount}`);
       }
     },
+    onSettled: () => {
+      void queryClient.invalidateQueries({ queryKey: ['rules'] });
+    },
     onError: (error: unknown) => {
       message.error(getErrorMessage(error, t('rules.syncFailed')));
     },
@@ -159,11 +198,18 @@ const Rules: React.FC = () => {
     },
   });
 
-  const columns: ColumnsType<NatRule> = [
+  const columns: ColumnsType<RuleRow> = [
     {
       title: t('rules.ruleName'),
       dataIndex: 'ruleName',
       key: 'ruleName',
+      render: (name: string, record) => (
+        <Space size={4} wrap>
+          <span>{name}</span>
+          {record.noReverse && <Tag style={{ marginInlineEnd: 0 }}>no-reverse</Tag>}
+          {record.unrRoute && <Tag style={{ marginInlineEnd: 0 }}>unr-route</Tag>}
+        </Space>
+      ),
     },
     {
       title: t('rules.protocol'),
@@ -192,48 +238,75 @@ const Rules: React.FC = () => {
       key: 'insidePort',
     },
     {
-      title: t('devices.status'),
-      dataIndex: 'enabled',
-      key: 'enabled',
-      render: (enabled: boolean) => (
-        <Tag color={enabled ? 'success' : 'default'}>
-          {enabled ? t('rules.enabled') : t('rules.disabled')}
-        </Tag>
-      ),
+      title: '状态',
+      key: 'syncState',
+      width: 190,
+      render: (_, record) =>
+        record.syncState ? (
+          <Tag color={SYNC_STATE_META[record.syncState].color}>
+            {SYNC_STATE_META[record.syncState].label}
+          </Tag>
+        ) : (
+          <Tag>{record.enabled ? t('rules.enabled') : t('rules.disabled')}</Tag>
+        ),
     },
     {
       title: t('devices.actions'),
       key: 'action',
       width: 150,
-      render: (_, record) => (
-        <Space size="small">
-          <Button
-            size="small"
-            icon={<EditOutlined />}
-            onClick={() => {
-              setEditingRule(record);
-              setIsModalOpen(true);
-            }}
-          >
-            {t('common.edit')}
-          </Button>
-          <Popconfirm
-            title={t('common.delete')}
-            description={t('rules.deleteConfirm')}
-            onConfirm={() => deleteMutation.mutate(record.id)}
-            okText={t('common.confirm')}
-            cancelText={t('common.cancel')}
-          >
-            <Button size="small" danger icon={<DeleteOutlined />}>
-              {t('common.delete')}
+      render: (_, record) =>
+        record.deviceOnly ? (
+          <span style={{ color: '#999' }}>—</span>
+        ) : (
+          <Space size="small">
+            <Button
+              size="small"
+              icon={<EditOutlined />}
+              onClick={() => {
+                setEditingRule(record);
+                setIsModalOpen(true);
+              }}
+            >
+              {t('common.edit')}
             </Button>
-          </Popconfirm>
-        </Space>
-      ),
+            <Popconfirm
+              title={t('common.delete')}
+              description={t('rules.deleteConfirm')}
+              onConfirm={() => deleteMutation.mutate(record.id)}
+              okText={t('common.confirm')}
+              cancelText={t('common.cancel')}
+            >
+              <Button size="small" danger icon={<DeleteOutlined />}>
+                {t('common.delete')}
+              </Button>
+            </Popconfirm>
+          </Space>
+        ),
     },
   ];
 
-  const filteredRules = rules?.filter((rule) => {
+  // After a failed re-read the last comparison is stale; show no states rather than old ones.
+  const liveComparison = compareError ? undefined : comparison;
+  const deviceOnlyRows: RuleRow[] = (liveComparison?.deviceOnly ?? []).map((rule) => ({
+    ...rule,
+    id: `device-only:${rule.ruleName}:${rule.protocol}:${rule.globalIp}:${rule.globalPort}`,
+    deviceId: activeDeviceId,
+    enabled: true,
+    noReverse: false,
+    unrRoute: false,
+    createdAt: new Date(0),
+    updatedAt: new Date(0),
+    syncState: 'deviceOnly',
+    deviceOnly: true,
+  }));
+  const rows: RuleRow[] = [
+    ...(rules ?? []).map((rule) => ({ ...rule, syncState: liveComparison?.states[rule.id] })),
+    ...deviceOnlyRows,
+  ];
+  const pendingCount = liveComparison ? countPendingChanges(liveComparison) : 0;
+  const deviceOnlyCount = liveComparison?.deviceOnly.length ?? 0;
+
+  const filteredRules = rows.filter((rule) => {
     const matchesSearch =
       rule.ruleName.toLowerCase().includes(searchText.toLowerCase()) ||
       rule.globalIp.includes(searchText) ||
@@ -241,7 +314,8 @@ const Rules: React.FC = () => {
     const matchesProtocol = protocolFilter === 'all' || rule.protocol === protocolFilter;
     const matchesStatus =
       statusFilter === 'all' ||
-      (statusFilter === 'enabled' && rule.enabled) ||
+      (statusFilter === 'pending' && isPendingState(rule.syncState)) ||
+      (statusFilter === 'enabled' && rule.enabled && !rule.deviceOnly) ||
       (statusFilter === 'disabled' && !rule.enabled);
 
     return matchesSearch && matchesProtocol && matchesStatus;
@@ -303,6 +377,8 @@ const Rules: React.FC = () => {
                 preview.token
               );
               if (!result.success) {
+                // The device may have partly changed; show a fresh comparison.
+                void queryClient.invalidateQueries({ queryKey: ['rules'] });
                 const detail = `${result.status}: ${result.message}${result.backupId ? '；备份 ' + result.backupId : ''}`;
                 message.error(detail);
                 throw new Error(detail);
@@ -414,17 +490,97 @@ const Rules: React.FC = () => {
     });
   };
 
+  const previewAndPush = async () => {
+    if (!activeDeviceId) return;
+    try {
+      const preview = await window.electronAPI.rule.previewSync(activeDeviceId);
+      modal.confirm({
+        title: t('rules.syncToDevice'),
+        content: renderDiff(preview),
+        okText: t('common.confirm'),
+        okType: 'primary',
+        cancelText: t('common.cancel'),
+        onOk: () =>
+          syncToDeviceMutation.mutateAsync({ deviceId: activeDeviceId, token: preview.token }),
+      });
+    } catch (error) {
+      message.error(getErrorMessage(error, '读取同步差异失败'));
+    }
+  };
+
+  const confirmDiscardChanges = () =>
+    activeDeviceId &&
+    modal.confirm({
+      title: '放弃未下发的改动？',
+      content:
+        '软件中的规则会恢复成设备上的样子，尚未下发的新增、修改和删除都会丢失；只存在于软件中的已禁用规则会保留，设备上仍有的规则会恢复为启用。',
+      okText: '放弃改动',
+      okType: 'danger',
+      cancelText: t('common.cancel'),
+      onOk: () => syncFromDeviceMutation.mutateAsync(activeDeviceId),
+    });
+
   const currentDevice = resolveCurrentRuleDevice(devices, activeDeviceId);
 
   return (
     <div>
       <Card>
         <Space direction="vertical" size="middle" style={{ width: '100%' }}>
-          <Alert
-            type="info"
-            showIcon
-            message="这里的新增、编辑、删除先保存在本机，点击“下发到设备”并核验通过后才会在防火墙上生效。"
-          />
+          {activeDeviceId &&
+            (comparing && !comparison ? (
+              <Alert type="info" showIcon message="正在读取设备上的规则…" />
+            ) : compareError ? (
+              <Alert
+                type="warning"
+                showIcon
+                message="无法读取设备，下面是软件中保存的规则，可能与设备不一致"
+                description={getErrorMessage(compareError, '读取失败')}
+                action={
+                  <Button size="small" onClick={() => void rereadDevice()} loading={comparing}>
+                    重试
+                  </Button>
+                }
+              />
+            ) : comparison && pendingCount > 0 ? (
+              <Alert
+                type="warning"
+                showIcon
+                message={`有 ${pendingCount} 项改动尚未下发到设备（设备规则读取于 ${formatReadTime(comparison.readAt)}）`}
+                description={
+                  <>
+                    带“待新增 / 待修改 / 待从设备删除”标签的规则只在软件中改过，防火墙上还是原样。
+                    {deviceOnlyCount > 0 &&
+                      ` 另有 ${deviceOnlyCount} 条规则只在设备上有（可能是有人直接在防火墙上添加的），下发会把它们从设备删除；想保留请点“放弃改动”把它们读入软件。`}
+                  </>
+                }
+                action={
+                  <Space direction="vertical" size={4}>
+                    <Button
+                      size="small"
+                      type="primary"
+                      onClick={() => void previewAndPush()}
+                      loading={syncToDeviceMutation.isPending}
+                    >
+                      下发到设备
+                    </Button>
+                    <Button size="small" onClick={confirmDiscardChanges}>
+                      放弃改动
+                    </Button>
+                  </Space>
+                }
+              />
+            ) : comparison ? (
+              <Alert
+                type="success"
+                showIcon
+                message={`与设备一致（设备规则读取于 ${formatReadTime(comparison.readAt)}）`}
+                action={
+                  <Button size="small" onClick={() => void rereadDevice()} loading={comparing}>
+                    重新读取
+                  </Button>
+                }
+              />
+            ) : null)}
           <div
             style={{
               display: 'flex',
@@ -458,6 +614,7 @@ const Rules: React.FC = () => {
               </Select>
               <Select style={{ width: 120 }} value={statusFilter} onChange={setStatusFilter}>
                 <Select.Option value="all">{t('devices.status')}</Select.Option>
+                <Select.Option value="pending">待下发</Select.Option>
                 <Select.Option value="enabled">{t('rules.enabled')}</Select.Option>
                 <Select.Option value="disabled">{t('rules.disabled')}</Select.Option>
               </Select>
@@ -487,9 +644,11 @@ const Rules: React.FC = () => {
             <Button
               size="small"
               icon={<ReloadOutlined />}
-              onClick={() => void queryClient.invalidateQueries({ queryKey: ['rules'] })}
+              onClick={() => void rereadDevice()}
+              loading={comparing}
+              disabled={!activeDeviceId}
             >
-              {t('common.refresh')}
+              重新读取设备
             </Button>
             <Button
               size="small"
@@ -512,31 +671,7 @@ const Rules: React.FC = () => {
             <Button
               size="small"
               icon={<SyncOutlined />}
-              onClick={() =>
-                void (async () => {
-                  if (!activeDeviceId) {
-                    return;
-                  }
-                  try {
-                    const preview = await window.electronAPI.rule.previewSync(activeDeviceId);
-                    modal.confirm({
-                      title: t('rules.syncToDevice'),
-                      content: renderDiff(preview),
-                      okText: t('common.confirm'),
-                      okType: 'primary',
-                      cancelText: t('common.cancel'),
-                      onOk: () => {
-                        return syncToDeviceMutation.mutateAsync({
-                          deviceId: activeDeviceId,
-                          token: preview.token,
-                        });
-                      },
-                    });
-                  } catch (error) {
-                    message.error(getErrorMessage(error, '读取同步差异失败'));
-                  }
-                })()
-              }
+              onClick={() => void previewAndPush()}
               loading={syncToDeviceMutation.isPending}
               disabled={!activeDeviceId}
             >
@@ -598,7 +733,7 @@ const Rules: React.FC = () => {
               <strong>{currentDevice.name}</strong>
               <span style={{ color: '#999' }}>{currentDevice.host}</span>
               <span style={{ marginLeft: 'auto', color: '#999' }}>
-                {t('common.info')}: {filteredRules?.length || 0}
+                共 {filteredRules.length} 条
               </span>
             </div>
           )}
@@ -614,7 +749,7 @@ const Rules: React.FC = () => {
             >
               <Space style={{ width: '100%', justifyContent: 'space-between' }} align="center" wrap>
                 <span style={{ color: '#8c5a13', fontWeight: 500 }}>
-                  {t('common.info')}: {selectedRowKeys.length}
+                  已选 {selectedRowKeys.length} 条
                 </span>
                 <Space wrap>
                   <Button type="primary" onClick={handleBatchUpdateIP}>
@@ -635,11 +770,13 @@ const Rules: React.FC = () => {
             rowSelection={{
               selectedRowKeys,
               onChange: (nextKeys) => setSelectedRowKeys(nextKeys),
+              getCheckboxProps: (record) => ({ disabled: !!record.deviceOnly }),
             }}
             columns={columns}
             dataSource={filteredRules}
             loading={isLoading}
             rowKey="id"
+            rowClassName={(record) => (isPendingState(record.syncState) ? 'rule-row-pending' : '')}
             pagination={createTablePagination(10, '条')}
           />
         </Space>

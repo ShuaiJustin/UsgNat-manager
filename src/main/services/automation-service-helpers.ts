@@ -10,6 +10,7 @@ type AutomationRuleLike = {
   insideIp?: string | null;
   insidePort?: string | null;
   noReverse?: boolean | null;
+  unrRoute?: boolean | null;
 };
 
 type AutomationRulePayloadInput = {
@@ -21,6 +22,7 @@ type AutomationRulePayloadInput = {
   insidePort: string;
   enabled: boolean;
   noReverse?: boolean | null;
+  unrRoute?: boolean | null;
   addSyntax?: ParsedNatRule['addSyntax'];
 };
 
@@ -235,6 +237,7 @@ export const createRuleSnapshots = (
     insidePort: rule.insidePort,
     enabled: rule.enabled,
     noReverse: rule.noReverse || false,
+    unrRoute: rule.unrRoute || false,
     ...(rule.addSyntax ? { addSyntax: rule.addSyntax } : {}),
   }));
 
@@ -250,6 +253,7 @@ export const createNatRulePayloads = (
     insidePort: rule.insidePort,
     enabled: rule.enabled,
     noReverse: rule.noReverse || false,
+    unrRoute: rule.unrRoute || false,
     ...(rule.addSyntax ? { addSyntax: rule.addSyntax } : {}),
   }));
 
@@ -370,6 +374,7 @@ export const getUpdatedRuleVerificationIssues = (
       matchedRule.insideIp !== updatedRule.insideIp ||
       matchedRule.insidePort !== updatedRule.insidePort ||
       Boolean(matchedRule.noReverse) !== Boolean(updatedRule.noReverse) ||
+      Boolean(matchedRule.unrRoute) !== Boolean(updatedRule.unrRoute) ||
       !matchedRule.enabled
     ) {
       issues.push(`规则 ${expectedRule.ruleName} 未在设备上生效`);

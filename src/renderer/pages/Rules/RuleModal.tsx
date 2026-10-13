@@ -1,5 +1,5 @@
 import React, { useEffect } from 'react';
-import { App, Form, Input, Modal, Select, Switch } from 'antd';
+import { App, Checkbox, Form, Input, Modal, Select, Space, Switch } from 'antd';
 import { useMutation } from '@tanstack/react-query';
 
 import type { NatRule } from '@/types';
@@ -43,8 +43,8 @@ const RuleModal: React.FC<RuleModalProps> = ({ open, rule, deviceId, onClose, on
       onSuccess();
       onClose();
     },
-    onError: () => {
-      message.error('规则创建失败');
+    onError: (error: unknown) => {
+      message.error(`规则创建失败：${error instanceof Error ? error.message : '未知错误'}`);
     },
   });
 
@@ -55,8 +55,8 @@ const RuleModal: React.FC<RuleModalProps> = ({ open, rule, deviceId, onClose, on
       onSuccess();
       onClose();
     },
-    onError: () => {
-      message.error('规则更新失败');
+    onError: (error: unknown) => {
+      message.error(`规则更新失败：${error instanceof Error ? error.message : '未知错误'}`);
     },
   });
 
@@ -90,6 +90,8 @@ const RuleModal: React.FC<RuleModalProps> = ({ open, rule, deviceId, onClose, on
         initialValues={{
           protocol: 'TCP',
           enabled: true,
+          noReverse: false,
+          unrRoute: false,
         }}
       >
         <Form.Item
@@ -220,6 +222,17 @@ const RuleModal: React.FC<RuleModalProps> = ({ open, rule, deviceId, onClose, on
 
         <Form.Item label="描述" name="description">
           <Input.TextArea rows={3} placeholder="规则描述信息，可选" />
+        </Form.Item>
+
+        <Form.Item label="附加选项" style={{ marginBottom: 8 }}>
+          <Space direction="vertical">
+            <Form.Item name="noReverse" valuePropName="checked" noStyle>
+              <Checkbox>no-reverse：不生成反向映射</Checkbox>
+            </Form.Item>
+            <Form.Item name="unrRoute" valuePropName="checked" noStyle>
+              <Checkbox>unr-route：同时下发公网地址的 UNR 路由</Checkbox>
+            </Form.Item>
+          </Space>
         </Form.Item>
 
         <Form.Item label="启用规则" name="enabled" valuePropName="checked">

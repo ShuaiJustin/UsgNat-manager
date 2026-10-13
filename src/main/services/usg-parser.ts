@@ -9,6 +9,8 @@ export interface ParsedNatRule {
   description?: string;
   addSyntax?: 'direct-name' | 'name-keyword' | 'endpoint';
   noReverse?: boolean;
+  // unr-route: the device also installs a UNR route for the global address.
+  unrRoute?: boolean;
 }
 
 export interface ParsedSystemInfo {
@@ -40,6 +42,10 @@ const normalizeNatPort = (value: string): string => NAT_SERVICE_PORTS[value.toLo
 // Huawei prepends this standalone header even to filtered configuration reads.
 const HUAWEI_TIMESTAMP_HEADER =
   /^\d{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])\s+(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d{3})?\s+[+-](?:0\d|1[0-4]):[0-5]\d$/;
+
+// Trailing options that are parsed, stored and written back unchanged. Anything else stops a
+// read, since rewriting such a rule would silently drop the option.
+const SUPPORTED_NAT_OPTIONS = new Set(['no-reverse', 'unr-route']);
 
 export const hasDeviceRuleName = (rule: ParsedNatRule): boolean =>
   Boolean(rule.ruleName) &&
@@ -107,7 +113,9 @@ export class USGParser {
       const suffix = line.match(/\sinside\s+\S+\s+\S+(.*)$/i)?.[1]?.trim() || '';
       if (
         !rule ||
-        (suffix && suffix !== 'no-reverse') ||
+        !suffix
+          .split(/\s+/)
+          .every((option) => !option || SUPPORTED_NAT_OPTIONS.has(option.toLowerCase())) ||
         !this.isValidIP(rule.globalIp) ||
         !this.isValidIP(rule.insideIp) ||
         ![rule.globalPort, rule.insidePort].every(
@@ -158,7 +166,8 @@ export class USGParser {
         insidePort: normalizeNatPort(namedMatch[7]),
         enabled: !/^\s*undo\s/i.test(line),
         addSyntax: namedMatch[1] ? 'name-keyword' : 'direct-name',
-        noReverse: /no-reverse/i.test(additionalParams),
+        noReverse: /(^|\s)no-reverse(\s|$)/i.test(additionalParams),
+        unrRoute: /(^|\s)unr-route(\s|$)/i.test(additionalParams),
       };
     }
 
@@ -177,7 +186,8 @@ export class USGParser {
         insidePort: normalizeNatPort(endpointMatch[5]),
         enabled: !/^\s*undo\s/i.test(line),
         addSyntax: 'endpoint',
-        noReverse: /no-reverse/i.test(additionalParams),
+        noReverse: /(^|\s)no-reverse(\s|$)/i.test(additionalParams),
+        unrRoute: /(^|\s)unr-route(\s|$)/i.test(additionalParams),
       };
     }
 
@@ -231,6 +241,11 @@ export class USGParser {
       command += ' no-reverse';
     }
 
+    // Same order as the device prints it: no-reverse before unr-route.
+    if (rule.unrRoute) {
+      command += ' unr-route';
+    }
+
     return command;
   }
 
@@ -267,10 +282,14 @@ export class USGParser {
         deletes.push(this.generateDeleteNatServerCommand(deviceRule));
       }
 
+      // Only the IP changes; options follow the device so a stale local copy cannot strip
+      // no-reverse or unr-route from a live rule.
       const updated = {
         ...rule,
         globalIp: newGlobalIp,
         addSyntax: deviceRule?.addSyntax || rule.addSyntax,
+        noReverse: deviceRule ? Boolean(deviceRule.noReverse) : rule.noReverse,
+        unrRoute: deviceRule ? Boolean(deviceRule.unrRoute) : rule.unrRoute,
       };
       target.push(updated);
       adds.push(this.generateNatServerCommand(updated));
@@ -299,7 +318,12 @@ export class USGParser {
         ? rule.ruleName
         : `NAT_${rule.globalIp}_${rule.globalPort}_${rule.protocol.toUpperCase()}`;
     deviceRules.forEach((rule) => deviceRuleMap.set(ruleKey(rule), rule));
-    localRules.forEach((rule) => localRuleMap.set(ruleKey(rule), rule));
+    // Disabled rules only exist locally; leaving them out means a device rule they shadow is
+    // deleted, exactly as the preview and the rules page describe, even when two local rules
+    // share a key.
+    localRules
+      .filter((rule) => rule.enabled)
+      .forEach((rule) => localRuleMap.set(ruleKey(rule), rule));
     const added: ParsedNatRule[] = [];
 
     for (const [ruleName, deviceRule] of deviceRuleMap) {
@@ -326,7 +350,8 @@ export class USGParser {
         deviceRule.insideIp !== localRule.insideIp ||
         deviceRule.insidePort !== localRule.insidePort ||
         deviceRule.enabled !== localRule.enabled ||
-        Boolean(deviceRule.noReverse) !== Boolean(localRule.noReverse);
+        Boolean(deviceRule.noReverse) !== Boolean(localRule.noReverse) ||
+        Boolean(deviceRule.unrRoute) !== Boolean(localRule.unrRoute);
 
       if (hasChanged) {
         deletes.push(this.generateDeleteNatServerCommand(deviceRule));

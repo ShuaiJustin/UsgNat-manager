@@ -128,3 +128,44 @@ test('returns null for incomplete or invalid test email config inputs', () => {
     null
   );
 });
+
+test('recipients accept common separators and report malformed addresses', async () => {
+  const { findInvalidRecipients, normalizeRecipients } = await import(
+    './automationNotification.ts'
+  );
+  assert.deepEqual(normalizeRecipients('a@x.com，b@y.cn; c@z.org  d@w.net'), [
+    'a@x.com',
+    'b@y.cn',
+    'c@z.org',
+    'd@w.net',
+  ]);
+  assert.deepEqual(findInvalidRecipients('a@x.com, admin, b@y'), ['admin', 'b@y']);
+});
+
+test('well-known SMTP ports pick their encryption', async () => {
+  const { getEncryptionForPort } = await import('./automationNotification.ts');
+  assert.equal(getEncryptionForPort('465'), 'ssl');
+  assert.equal(getEncryptionForPort('587'), 'starttls');
+  assert.equal(getEncryptionForPort('2525'), undefined);
+});
+
+test('SMTP port input is validated and odd port/encryption pairs are flagged', async () => {
+  const { isValidSmtpPort, getPortEncryptionMismatch } = await import(
+    './automationNotification.ts'
+  );
+  assert.equal(isValidSmtpPort('465'), true);
+  assert.equal(isValidSmtpPort('4e2'), false);
+  assert.equal(isValidSmtpPort('0x1F'), false);
+  assert.equal(isValidSmtpPort('70000'), false);
+  assert.match(getPortEncryptionMismatch('587', 'ssl') ?? '', /STARTTLS/);
+  assert.match(getPortEncryptionMismatch('465', 'starttls') ?? '', /SSL/);
+  assert.equal(getPortEncryptionMismatch('465', 'ssl'), null);
+  assert.equal(getPortEncryptionMismatch('2525', 'ssl'), null);
+});
+
+test('documentation example hosts are rejected as SMTP servers', async () => {
+  const { isPlaceholderSmtpHost } = await import('./automationNotification.ts');
+  assert.equal(isPlaceholderSmtpHost('smtp.example.com'), true);
+  assert.equal(isPlaceholderSmtpHost('smtp.qq.com'), false);
+  assert.equal(isPlaceholderSmtpHost('mail.myexample.com'), false);
+});

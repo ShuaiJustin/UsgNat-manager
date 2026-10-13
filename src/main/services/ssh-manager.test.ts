@@ -353,3 +353,24 @@ test('HRP_A prompts and line-erase sequences are handled', async () => {
   assert.equal(isDevicePromptReady('\r\nHRP_A<FW>'), true);
   assert.equal(helpers.stripPagerArtifacts('dis\x1b[Kplay'), 'display');
 });
+
+test('command timeouts say where the read stalled without echoing device output', async () => {
+  const helpers = await import('./ssh-manager-helpers.ts');
+  assert.equal(
+    helpers.describeCommandTimeout({
+      stage: 'opening',
+      receivedBytes: 0,
+      pagerPages: 0,
+      confirmationPending: false,
+    }),
+    '命令执行超时（设备未打开命令会话，可能是 VTY 登录数已满；共收到 0 字节）'
+  );
+  const running = helpers.describeCommandTimeout({
+    stage: 'running',
+    receivedBytes: 2048,
+    pagerPages: 2,
+    confirmationPending: true,
+  });
+  assert.match(running, /已翻页 2 次/);
+  assert.match(running, /\[Y\/N\]/);
+});

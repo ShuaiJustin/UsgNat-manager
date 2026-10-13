@@ -42,6 +42,7 @@ model NatRule {
   enabled      Boolean  @default(true) // 是否启用
   description  String?  // 描述
   noReverse    Boolean  @default(false) // 不生成反向Server-Map表项
+  unrRoute     Boolean  @default(false) // 下发 UNR 路由（unr-route）
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 

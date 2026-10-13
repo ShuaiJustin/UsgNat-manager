@@ -172,6 +172,7 @@ test('parses official named NAT server rules that use the name keyword', () => {
       enabled: true,
       noReverse: true,
       addSyntax: 'name-keyword',
+      unrRoute: false,
     },
   ]);
 });
@@ -192,6 +193,7 @@ test('parses USG6330 named NAT server rules that omit the name keyword', () => {
       enabled: true,
       noReverse: true,
       addSyntax: 'direct-name',
+      unrRoute: false,
     },
   ]);
 });
@@ -598,4 +600,87 @@ test('interface brief parsing collects assigned IPv4 addresses only', () => {
 
 test('interface addresses are found when the mask ends the line', () => {
   assert.deepEqual(usgParser.parseInterfaceAddresses('Dialer0 203.0.113.7/32'), ['203.0.113.7']);
+});
+
+test('interface addresses parse from real USG6300 interface brief output', () => {
+  const output = [
+    'display ip interface brief | include /',
+    ' 2026-10-13 17:15:11.650 +08:00',
+    ' *down: administratively down',
+    ' (s): spoofing',
+    ' The number of interface that is UP in Physical is 6',
+    '',
+    ' Interface                         IP Address/Mask      Physical   Protocol  ',
+    ' Dialer0                           180.165.25.145/32    up         up(s)     ',
+    ' GigabitEthernet0/0/0              192.168.0.1/24       down       down      ',
+    ' GigabitEthernet0/0/1              unassigned           up         down      ',
+    ' Virtual-Template0                 192.168.6.1/32       up         up(s)     ',
+    ' XGigabitEthernet0/0/0             192.168.3.1/24       up         up        ',
+  ].join('\r\n');
+  assert.deepEqual(usgParser.parseInterfaceAddresses(output), [
+    '180.165.25.145',
+    '192.168.0.1',
+    '192.168.6.1',
+    '192.168.3.1',
+  ]);
+});
+
+test('a disabled local rule sharing a key with an enabled synced one does not delete it', () => {
+  const live = {
+    ...safetyRule,
+    ruleName: 'NAT_1.2.3.4_8080_TCP',
+    addSyntax: 'endpoint' as const,
+  };
+  const commands = usgParser.generateSyncToDeviceCommands(
+    [live],
+    [
+      { ...live, addSyntax: undefined },
+      { ...live, addSyntax: undefined, enabled: false, insideIp: '192.168.1.99' },
+    ]
+  );
+  assert.deepEqual(commands, []);
+});
+
+test('unr-route rules are read, compared and written back with their options', () => {
+  const [rule] = usgParser.parseNatServerSnapshot(
+    'nat server update protocol tcp global 116.232.123.242 6688 inside 172.16.51.151 6688 no-reverse unr-route',
+    true
+  );
+  assert.equal(rule.noReverse, true);
+  assert.equal(rule.unrRoute, true);
+  assert.equal(
+    usgParser.generateNatServerCommand({ ...rule, globalIp: '116.232.123.243' }),
+    'nat server update protocol tcp global 116.232.123.243 6688 inside 172.16.51.151 6688 no-reverse unr-route'
+  );
+  const commands = usgParser.generateBatchUpdateIPCommands([rule], '116.232.123.243', [rule]);
+  assert.ok(commands.some((command) => command.endsWith('no-reverse unr-route')));
+  assert.deepEqual(
+    usgParser.generateSyncToDeviceCommands([rule], [{ ...rule, unrRoute: false }]).slice(1, 3),
+    [
+      'undo nat server name update',
+      'nat server update protocol tcp global 116.232.123.242 6688 inside 172.16.51.151 6688 no-reverse',
+    ]
+  );
+  assert.throws(
+    () =>
+      usgParser.parseNatServerSnapshot(
+        'nat server x protocol tcp global 1.2.3.4 80 inside 10.0.0.1 80 vpn-instance a',
+        true
+      ),
+    /不支持/
+  );
+});
+
+test('a batch IP change keeps the options the device rule has even if the local copy lacks them', () => {
+  const [device] = usgParser.parseNatServerSnapshot(
+    'nat server update protocol tcp global 116.232.123.242 6688 inside 172.16.51.151 6688 no-reverse unr-route',
+    true
+  );
+  const stale = { ...device, noReverse: false, unrRoute: false, addSyntax: undefined };
+  const commands = usgParser.generateBatchUpdateIPCommands([stale], '116.232.123.243', [device]);
+  assert.ok(
+    commands.includes(
+      'nat server update protocol tcp global 116.232.123.243 6688 inside 172.16.51.151 6688 no-reverse unr-route'
+    )
+  );
 });

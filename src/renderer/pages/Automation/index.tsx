@@ -246,10 +246,24 @@ const Automation: React.FC = () => {
         return;
       }
 
-      const values = form.getFieldsValue();
+      try {
+        // Point at the missing or malformed field instead of a bare "error".
+        await form.validateFields([
+          'smtpServer',
+          'smtpPort',
+          'smtpUsername',
+          'smtpPassword',
+          'senderEmail',
+          'recipientEmails',
+        ]);
+      } catch {
+        message.error('请先补全标红的邮件配置项');
+        return;
+      }
+      const values = form.getFieldsValue(true) as AutomationFormValues;
       const testConfig = buildAutomationTestEmailConfig(values);
       if (!testConfig) {
-        message.error(t('common.error'));
+        message.error('邮件配置不完整，请检查服务器、账号、密码、发件人和收件人');
         return;
       }
 

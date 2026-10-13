@@ -180,7 +180,11 @@ export const buildAutomationFormSnapshot = ({
         senderEmail: emailConfig.from?.address || '',
         senderName: emailConfig.from?.name || '',
         recipientEmails: emailConfig.to?.join(', ') || '',
-        emailNotifyTypes: emailConfig.notifyTypes || [],
+        // An empty stored list has always meant "all types" in the main process; show that
+        // instead of an all-unchecked group that suggests nothing is sent.
+        emailNotifyTypes: emailConfig.notifyTypes?.length
+          ? emailConfig.notifyTypes
+          : [...DEFAULT_NOTIFY_TYPES],
       });
     }
   }

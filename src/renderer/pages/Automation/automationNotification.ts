@@ -36,11 +36,40 @@ export type AutomationTestEmailConfig = AutomationEmailBaseConfig;
 
 const DEFAULT_SENDER_NAME = 'USG NAT管理系统';
 
-const normalizeRecipients = (recipientEmails?: string): string[] =>
+// Commas, Chinese commas, semicolons and whitespace all separate recipients.
+export const normalizeRecipients = (recipientEmails?: string): string[] =>
   recipientEmails
-    ?.split(',')
+    ?.split(/[,，;；\s]+/)
     .map((email) => email.trim())
     .filter(Boolean) ?? [];
+
+const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+export const findInvalidRecipients = (recipientEmails?: string): string[] =>
+  normalizeRecipients(recipientEmails).filter((email) => !EMAIL_PATTERN.test(email));
+
+// Well-known ports imply their encryption; picking 587 while SSL/TLS stays selected is the
+// most common reason a test e-mail hangs until "Greeting never received".
+export const getEncryptionForPort = (port?: string): 'ssl' | 'starttls' | undefined =>
+  port === '465' ? 'ssl' : port === '587' || port === '25' ? 'starttls' : undefined;
+
+export const DEFAULT_EMAIL_NOTIFY_TYPES = ['ipChange', 'updateSuccess', 'updateFailed'];
+
+// example.com/.org/.net are reserved documentation domains; they can never deliver mail.
+export const isPlaceholderSmtpHost = (host?: string): boolean =>
+  /(^|\.)example\.(com|org|net)$/i.test(host?.trim() ?? '');
+
+export const isValidSmtpPort = (port?: string): boolean =>
+  /^\d{1,5}$/.test(port ?? '') && Number(port) >= 1 && Number(port) <= 65535;
+
+// A hint, not a block: some providers run SSL on non-standard ports.
+export const getPortEncryptionMismatch = (port?: string, encryption?: string): string | null => {
+  const expected = getEncryptionForPort(port);
+  if (!expected || !encryption || encryption === 'none' || encryption === expected) return null;
+  return expected === 'ssl'
+    ? '465 端口通常使用 SSL/TLS，当前选择可能导致连接失败'
+    : `${port} 端口通常使用 STARTTLS，当前选择可能导致连接失败`;
+};
 
 const resolveTransportSecurity = (
   smtpPort?: string,
@@ -73,7 +102,7 @@ export const buildAutomationEmailConfig = (
 ): AutomationEmailConfig => ({
   enabled,
   host: values.smtpServer || '',
-  port: parseInt(values.smtpPort || '', 10) || 465,
+  port: Number(values.smtpPort) || 465,
   ...resolveTransportSecurity(values.smtpPort, values.smtpEncryption),
   auth: {
     user: values.smtpUsername || '',
@@ -108,7 +137,7 @@ export const buildAutomationTestEmailConfig = (
   return {
     enabled: true,
     host: smtpServer,
-    port: parseInt(smtpPort, 10) || 465,
+    port: Number(smtpPort) || 465,
     ...resolveTransportSecurity(smtpPort, values.smtpEncryption),
     auth: {
       user: smtpUsername,

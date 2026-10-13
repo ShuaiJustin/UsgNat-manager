@@ -33,6 +33,22 @@ type DirectConnectionConfig = {
 
 type RuleBatchUpdatePayload = RuleDraft & UnknownRecord;
 
+export type RuleSyncState =
+  | 'synced'
+  | 'pendingAdd'
+  | 'pendingChange'
+  | 'pendingRemove'
+  | 'localDisabled';
+
+export type RuleComparison = {
+  readAt: string;
+  states: Record<string, RuleSyncState>;
+  deviceOnly: Pick<
+    NatRule,
+    'ruleName' | 'protocol' | 'globalIp' | 'globalPort' | 'insideIp' | 'insidePort'
+  >[];
+};
+
 type LogQueryFilter = {
   level?: Log['level'];
   operation?: string;
@@ -159,6 +175,7 @@ export interface ElectronAPI {
     getAll: (deviceId: string) => Promise<NatRule[]>;
     getTotalCount: () => Promise<number>;
     syncFromDevice: (deviceId: string) => Promise<NatRule[]>;
+    compareWithDevice: (deviceId: string, refresh?: boolean) => Promise<RuleComparison>;
     previewSync: (deviceId: string) => Promise<{
       added: string[];
       deleted: string[];

@@ -58,3 +58,34 @@ export const buildRulesCsv = (
     .join('\n');
 
 export const shouldShowRuleBatchActions = (selectedCount: number): boolean => selectedCount > 0;
+
+export type RuleRowSyncState =
+  | 'synced'
+  | 'pendingAdd'
+  | 'pendingChange'
+  | 'pendingRemove'
+  | 'localDisabled'
+  | 'deviceOnly';
+
+export const SYNC_STATE_META: Record<RuleRowSyncState, { label: string; color: string }> = {
+  synced: { label: '已同步', color: 'success' },
+  pendingAdd: { label: '待新增', color: 'processing' },
+  pendingChange: { label: '待修改', color: 'warning' },
+  pendingRemove: { label: '待从设备删除', color: 'error' },
+  localDisabled: { label: '仅本地（已禁用）', color: 'default' },
+  deviceOnly: { label: '仅设备上有，下发时会删除', color: 'purple' },
+};
+
+const PENDING_STATES: RuleRowSyncState[] = ['pendingAdd', 'pendingChange', 'pendingRemove'];
+
+// Everything a push would change on the device, including rules only the device has.
+export const countPendingChanges = (comparison: {
+  states: Record<string, string>;
+  deviceOnly: unknown[];
+}): number =>
+  Object.values(comparison.states).filter((state) =>
+    PENDING_STATES.includes(state as RuleRowSyncState)
+  ).length + comparison.deviceOnly.length;
+
+export const isPendingState = (state?: RuleRowSyncState): boolean =>
+  state === 'deviceOnly' || (!!state && PENDING_STATES.includes(state));

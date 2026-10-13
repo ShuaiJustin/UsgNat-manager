@@ -3,6 +3,7 @@ import path from 'path';
 
 import {
   buildNatRuleMigrationStatements,
+  REQUIRED_NAT_RULE_COLUMNS,
   DATABASE_SETUP_STATEMENTS,
 } from './database-service-helpers';
 import { prisma } from './prisma-client';
@@ -19,10 +20,11 @@ class DatabaseService {
 
       try {
         await prisma.$queryRaw`SELECT 1 FROM configs LIMIT 1`;
-        await this.runMigrations();
       } catch {
         await this.createTables();
       }
+      // Runs for new and existing databases alike, and fails if a required column is missing.
+      await this.runMigrations();
     } catch (error) {
       throw new Error(`Failed to initialize database: ${this.getErrorMessage(error)}`);
     }
@@ -45,8 +47,17 @@ class DatabaseService {
         await prisma.$executeRawUnsafe(statement);
       }
     } catch {
-      // Allow the app to continue even if a best-effort migration fails.
+      // Checked below: only a missing column is fatal.
     }
+    // Every rule query selects these columns; without them the rules features fail on each use,
+    // so report it at startup instead.
+    const columns: Array<{ name?: string | null }> = await prisma.$queryRawUnsafe(
+      'PRAGMA table_info(nat_rules)'
+    );
+    const missing = REQUIRED_NAT_RULE_COLUMNS.filter(
+      (column) => !columns.some((info) => info.name === column)
+    );
+    if (missing.length) throw new Error(`数据库升级失败，规则表缺少字段：${missing.join(', ')}`);
   }
 }
 

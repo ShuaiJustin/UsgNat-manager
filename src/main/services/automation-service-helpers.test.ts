@@ -241,6 +241,7 @@ test('creates rule snapshots with stable rollback fields', () => {
         insidePort: '8080',
         enabled: true,
         noReverse: false,
+        unrRoute: false,
       },
     ]
   );
@@ -280,6 +281,7 @@ test('creates NAT rule payloads for command generation', () => {
         insidePort: '22',
         enabled: true,
         noReverse: true,
+        unrRoute: false,
       },
       {
         ruleName: 'dns',
@@ -290,6 +292,7 @@ test('creates NAT rule payloads for command generation', () => {
         insidePort: '53',
         enabled: false,
         noReverse: false,
+        unrRoute: false,
       },
     ]
   );

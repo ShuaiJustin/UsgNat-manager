@@ -4,6 +4,7 @@ import fs from 'fs';
 import { credentialManager } from '../../services/credential-manager';
 import { logger } from '../../services/logger';
 import { prisma } from '../../services/prisma-client';
+import { deviceRuleSnapshots } from '../../services/device-rule-snapshots';
 import { sshManager } from '../../services/ssh-manager';
 import { mandatoryUpdateBusinessGate } from '../../services/mandatory-update-business-gate';
 import {
@@ -130,6 +131,7 @@ export function registerDeviceHandlers() {
           prisma.device.delete({ where: { id } }),
         ]);
         await sshManager.disconnect(id);
+        deviceRuleSnapshots.invalidate(id);
 
         await logger.success('设备管理', `设备删除成功: ${device.name}`);
       } catch (error) {
