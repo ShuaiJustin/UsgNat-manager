@@ -3,6 +3,7 @@ import test from 'node:test';
 
 import { assertBatchUpdateIPInput, getRuleIdsOutsideDevice } from './rule-handler-helpers.ts';
 import * as helpers from './rule-handler-helpers.ts';
+import { usgParser } from '../../services/usg-parser.ts';
 
 const rule = {
   ruleName: 'web',
@@ -63,8 +64,60 @@ test('completed device snapshots remove stale cached rules atomically and preser
     rows.map((row) => row.id),
     ['keep']
   );
+  const [range] = usgParser.parseNatServerSnapshot(
+    'nat server web protocol tcp global 1.2.3.4 20000 20053 inside 192.168.1.2 30000 30053 no-reverse unr-route',
+    true
+  );
+  await helpers.replaceDeviceRuleSnapshot(database, 'd', [range]);
+  assert.equal(rows[0].id, 'keep');
+  assert.equal(rows[0].globalPort, '20000-20053');
+  assert.equal(rows[0].insidePort, '30000-30053');
+  assert.equal(
+    usgParser.generateNatServerCommand(rows[0]),
+    'nat server web protocol tcp global 1.2.3.4 20000 20053 inside 192.168.1.2 30000 30053 no-reverse unr-route'
+  );
   await helpers.replaceDeviceRuleSnapshot(database, 'd', []);
   assert.deepEqual(rows, []);
+});
+
+test('range writes verify canonical read-back and build rollback commands with the full range', async () => {
+  const original = usgParser.parseNatServerSnapshot(
+    'nat server web protocol tcp global 1.2.3.4 20000 20053 inside 192.168.1.2 30000 30053 no-reverse unr-route',
+    true
+  );
+  const target = helpers.getBatchIPTarget(original, original, '5.6.7.8');
+  let actual = original;
+  let saved = false;
+  const commands = helpers.splitSaveCommands(
+    usgParser.generateSyncToDeviceCommands(original, target)
+  );
+  const result = await helpers.executeVerifiedRuleWrite(original, target, {
+    backup: async () => 'range-backup',
+    execute: async () => {
+      actual = usgParser.parseNatServerSnapshot(
+        commands.filter((line) => line.startsWith('nat server')).join('\n'),
+        true
+      );
+      return { success: true };
+    },
+    read: async () => actual,
+    save: async () => {
+      saved = true;
+      return { success: true };
+    },
+    rollback: async () => {
+      throw new Error('unexpected rollback');
+    },
+  });
+  assert.equal(result.status, 'verified');
+  assert.equal(saved, true);
+  assert.equal(helpers.equalDeviceRules(actual, target), true);
+  const restore = usgParser.generateSyncToDeviceCommands(actual, original);
+  assert.ok(
+    restore.includes(
+      'nat server web protocol tcp global 1.2.3.4 20000 20053 inside 192.168.1.2 30000 30053 no-reverse unr-route'
+    )
+  );
 });
 
 test('manual writes stop when backup fails, and classify partial/unknown readback instead of success', async () => {

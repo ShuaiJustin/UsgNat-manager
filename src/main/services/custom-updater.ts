@@ -5,7 +5,6 @@ import * as https from 'https';
 import * as http from 'http';
 import * as crypto from 'crypto';
 import { spawn } from 'child_process';
-import { URL } from 'node:url';
 import { isDevMode } from '../runtime-mode';
 import { logger } from './logger';
 import { configService } from './config-service';
@@ -31,7 +30,8 @@ import {
   isUpdatedLaunch,
   parseVerifiedUpdateVersionInfo,
   parseUpdateServerUrls,
-  readUpdateManifestResponse,
+  fetchUpdateManifest,
+  DEFAULT_UPDATE_SERVER_URLS,
   resolveDownloadedInstaller,
   resolveUpdateAssetUrl,
   runDownloadOperation,
@@ -78,16 +78,13 @@ type AppWithQuitState = typeof app & {
 
 type MandatoryUpdateStateHandler = (required: boolean) => void | Promise<void>;
 
-const MAX_UPDATE_MANIFEST_BYTES = 1024 * 1024;
-const DEFAULT_UPDATE_SERVER_URLS = ['https://updates.shcrystal.top'];
-
 const getErrorMessage = (error: unknown): string =>
   error instanceof Error ? error.message : String(error);
 
 /**
  * 自定义更新服务
  *
- * 使用 RESTful API 获取版本信息
+ * 从 GitHub Releases 描述文件获取版本信息，兼容自建 API
  */
 class CustomUpdater {
   private mainWindow: BrowserWindow | null = null;
@@ -410,7 +407,7 @@ class CustomUpdater {
   }
 
   /**
-   * 从 API 服务器获取版本信息
+   * 从 Releases 描述文件或兼容 API 获取版本信息
    */
   private async fetchFromServer(serverUrl: string): Promise<UpdateVersionInfo> {
     const currentVersion = app.getVersion();
@@ -424,62 +421,13 @@ class CustomUpdater {
       currentVersion,
     });
 
-    return new Promise<UpdateVersionInfo>((resolve, reject) => {
-      const parsedUrl = new URL(apiUrl);
-      const options = {
-        hostname: parsedUrl.hostname,
-        port: parsedUrl.port || (parsedUrl.protocol === 'https:' ? 443 : 80),
-        path: parsedUrl.pathname,
-        method: 'GET',
-        headers: {
-          'User-Agent': `USG-NAT-Manager/${currentVersion}`,
-        },
-        timeout: 10000,
-      };
-
-      const client = parsedUrl.protocol === 'https:' ? https : http;
-
-      const req = client.request(options, (res) => {
-        if (res.statusCode !== 200) {
-          logger.error('自动更新', `HTTP错误: ${res.statusCode}`, {
-            url: apiUrl,
-            statusCode: res.statusCode,
-            statusMessage: res.statusMessage,
-          });
-          res.once('error', () => {});
-          res.resume();
-          reject(new Error(`服务器返回错误: ${res.statusCode}`));
-          return;
-        }
-
-        void readUpdateManifestResponse(res, MAX_UPDATE_MANIFEST_BYTES).then((data) => {
-          try {
-            const versionInfo = parseVerifiedUpdateVersionInfo(
-              JSON.parse(data) as unknown,
-              UPDATE_SIGNING_PUBLIC_KEY
-            );
-
-            // 保存服务器地址用于后续下载
-            versionInfo._serverUrl = serverUrl;
-
-            resolve(versionInfo);
-          } catch {
-            reject(new Error('解析版本信息失败'));
-          }
-        }, reject);
-      });
-
-      req.on('error', (error) => {
-        reject(error);
-      });
-
-      req.on('timeout', () => {
-        req.destroy();
-        reject(new Error('请求超时'));
-      });
-
-      req.end();
-    });
+    const data = await fetchUpdateManifest(apiUrl, `USG-NAT-Manager/${currentVersion}`);
+    const versionInfo = parseVerifiedUpdateVersionInfo(
+      JSON.parse(data) as unknown,
+      UPDATE_SIGNING_PUBLIC_KEY
+    );
+    versionInfo._serverUrl = serverUrl;
+    return versionInfo;
   }
 
   /**
@@ -667,6 +615,7 @@ class CustomUpdater {
         if (
           res.statusCode === 301 ||
           res.statusCode === 302 ||
+          res.statusCode === 303 ||
           res.statusCode === 307 ||
           res.statusCode === 308
         ) {

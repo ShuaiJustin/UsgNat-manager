@@ -1,3 +1,5 @@
+import { natPortCommand, natPortsOverlap, parseNatPort } from './nat-port.ts';
+
 export interface ParsedNatRule {
   ruleName: string;
   protocol: 'TCP' | 'UDP' | 'ALL';
@@ -70,7 +72,7 @@ const findMatchingDeviceRule = (
 
 const endpointsOverlap = (left: ParsedNatRule, right: ParsedNatRule): boolean =>
   left.globalIp === right.globalIp &&
-  left.globalPort === right.globalPort &&
+  natPortsOverlap(left.globalPort, right.globalPort) &&
   (left.protocol.toUpperCase() === right.protocol.toUpperCase() ||
     left.protocol.toUpperCase() === 'ALL' ||
     right.protocol.toUpperCase() === 'ALL');
@@ -110,17 +112,11 @@ export class USGParser {
       .filter(Boolean)) {
       if (line === '#' || line === '!' || HUAWEI_TIMESTAMP_HEADER.test(line)) continue;
       const rule = /^nat\s+server\s/i.test(line) ? this.parseNatServerLine(line) : null;
-      const suffix = line.match(/\sinside\s+\S+\s+\S+(.*)$/i)?.[1]?.trim() || '';
       if (
         !rule ||
-        !suffix
-          .split(/\s+/)
-          .every((option) => !option || SUPPORTED_NAT_OPTIONS.has(option.toLowerCase())) ||
         !this.isValidIP(rule.globalIp) ||
         !this.isValidIP(rule.insideIp) ||
-        ![rule.globalPort, rule.insidePort].every(
-          (port) => /^\d+$/.test(port) && Number(port) >= 1 && Number(port) <= 65535
-        ) ||
+        ![rule.globalPort, rule.insidePort].every((port) => parseNatPort(port)) ||
         names.has(rule.ruleName)
       ) {
         throw new Error(`设备配置含不支持或无法解析的规则，已阻止覆盖或下发: ${line}`);
@@ -151,47 +147,40 @@ export class USGParser {
   }
 
   private parseNatServerLine(line: string): ParsedNatRule | null {
-    const namedPattern =
-      /nat\s+server\s+(?:(name)\s+)?(\S+)\s+protocol\s+(tcp|udp|all)\s+global\s+(\S+)\s+(\S+)\s+inside\s+(\S+)\s+(\S+)(.*)$/i;
-    const namedMatch = line.match(namedPattern);
-
-    if (namedMatch) {
-      const additionalParams = namedMatch[8] || '';
-      return {
-        ruleName: namedMatch[2],
-        protocol: namedMatch[3].toUpperCase() as 'TCP' | 'UDP' | 'ALL',
-        globalIp: namedMatch[4],
-        globalPort: normalizeNatPort(namedMatch[5]),
-        insideIp: namedMatch[6],
-        insidePort: normalizeNatPort(namedMatch[7]),
-        enabled: !/^\s*undo\s/i.test(line),
-        addSyntax: namedMatch[1] ? 'name-keyword' : 'direct-name',
-        noReverse: /(^|\s)no-reverse(\s|$)/i.test(additionalParams),
-        unrRoute: /(^|\s)unr-route(\s|$)/i.test(additionalParams),
-      };
-    }
-
-    const endpointPattern =
-      /nat\s+server\s+protocol\s+(tcp|udp|all)\s+global\s+(\S+)\s+(\S+)\s+inside\s+(\S+)\s+(\S+)(.*)$/i;
-    const endpointMatch = line.match(endpointPattern);
-
-    if (endpointMatch) {
-      const additionalParams = endpointMatch[6] || '';
-      return {
-        ruleName: `NAT_${endpointMatch[2]}_${normalizeNatPort(endpointMatch[3])}_${endpointMatch[1].toUpperCase()}`,
-        protocol: endpointMatch[1].toUpperCase() as 'TCP' | 'UDP' | 'ALL',
-        globalIp: endpointMatch[2],
-        globalPort: normalizeNatPort(endpointMatch[3]),
-        insideIp: endpointMatch[4],
-        insidePort: normalizeNatPort(endpointMatch[5]),
-        enabled: !/^\s*undo\s/i.test(line),
-        addSyntax: 'endpoint',
-        noReverse: /(^|\s)no-reverse(\s|$)/i.test(additionalParams),
-        unrRoute: /(^|\s)unr-route(\s|$)/i.test(additionalParams),
-      };
-    }
-
-    return null;
+    const match = line.match(
+      /^\s*(?:undo\s+)?nat\s+server\s+(?:(?:(name)\s+)?(\S+)\s+)?protocol\s+(tcp|udp|all)\s+global\s+(\S+)\s+(\S+)(?:\s+(\d+))?\s+inside\s+(\S+)\s+(\S+)(?:\s+(\d+))?(.*)$/i
+    );
+    if (!match) return null;
+    const [
+      ,
+      nameKeyword,
+      name,
+      protocol,
+      globalIp,
+      globalStart,
+      globalEnd,
+      insideIp,
+      insideStart,
+      insideEnd,
+      suffix,
+    ] = match;
+    const options = suffix.trim().split(/\s+/).filter(Boolean);
+    if (!options.every((option) => SUPPORTED_NAT_OPTIONS.has(option.toLowerCase()))) return null;
+    const globalPort = [globalStart, globalEnd].filter(Boolean).map(normalizeNatPort).join('-');
+    const insidePort = [insideStart, insideEnd].filter(Boolean).map(normalizeNatPort).join('-');
+    if (!parseNatPort(globalPort) || !parseNatPort(insidePort)) return null;
+    return {
+      ruleName: name || `NAT_${globalIp}_${globalPort}_${protocol.toUpperCase()}`,
+      protocol: protocol.toUpperCase() as ParsedNatRule['protocol'],
+      globalIp,
+      globalPort,
+      insideIp,
+      insidePort,
+      enabled: !/^\s*undo\s/i.test(line),
+      addSyntax: name ? (nameKeyword ? 'name-keyword' : 'direct-name') : 'endpoint',
+      noReverse: options.some((option) => option.toLowerCase() === 'no-reverse'),
+      unrRoute: options.some((option) => option.toLowerCase() === 'unr-route'),
+    };
   }
 
   parseSystemInfo(output: string): ParsedSystemInfo {
@@ -227,14 +216,14 @@ export class USGParser {
 
     if (hasDeviceRuleName(rule)) {
       if (rule.addSyntax === 'name-keyword') {
-        command = `nat server name ${rule.ruleName} protocol ${protocol} global ${rule.globalIp} ${rule.globalPort} inside ${rule.insideIp} ${rule.insidePort}`;
+        command = `nat server name ${rule.ruleName} protocol ${protocol} global ${rule.globalIp} ${natPortCommand(rule.globalPort)} inside ${rule.insideIp} ${natPortCommand(rule.insidePort)}`;
       } else {
-        command = `nat server ${rule.ruleName} protocol ${protocol} global ${rule.globalIp} ${rule.globalPort} inside ${rule.insideIp} ${rule.insidePort}`;
+        command = `nat server ${rule.ruleName} protocol ${protocol} global ${rule.globalIp} ${natPortCommand(rule.globalPort)} inside ${rule.insideIp} ${natPortCommand(rule.insidePort)}`;
       }
     } else if (rule.addSyntax === 'name-keyword' && rule.ruleName) {
-      command = `nat server name ${rule.ruleName} protocol ${protocol} global ${rule.globalIp} ${rule.globalPort} inside ${rule.insideIp} ${rule.insidePort}`;
+      command = `nat server name ${rule.ruleName} protocol ${protocol} global ${rule.globalIp} ${natPortCommand(rule.globalPort)} inside ${rule.insideIp} ${natPortCommand(rule.insidePort)}`;
     } else {
-      command = `nat server protocol ${protocol} global ${rule.globalIp} ${rule.globalPort} inside ${rule.insideIp} ${rule.insidePort}`;
+      command = `nat server protocol ${protocol} global ${rule.globalIp} ${natPortCommand(rule.globalPort)} inside ${rule.insideIp} ${natPortCommand(rule.insidePort)}`;
     }
 
     if (rule.noReverse) {
@@ -260,7 +249,7 @@ export class USGParser {
 
   private generateDeleteNatServerByEndpointCommand(rule: ParsedNatRule): string {
     const protocol = rule.protocol.toLowerCase();
-    return `undo nat server protocol ${protocol} global ${rule.globalIp} ${rule.globalPort} inside ${rule.insideIp} ${rule.insidePort}`;
+    return `undo nat server protocol ${protocol} global ${rule.globalIp} ${natPortCommand(rule.globalPort)} inside ${rule.insideIp} ${natPortCommand(rule.insidePort)}`;
   }
 
   generateBatchUpdateIPCommands(
@@ -434,9 +423,7 @@ export class USGParser {
       !['TCP', 'UDP', 'ALL'].includes(rule.protocol.toUpperCase()) ||
       !this.isValidIP(rule.globalIp) ||
       !this.isValidIP(rule.insideIp) ||
-      ![rule.globalPort, rule.insidePort].every(
-        (port) => /^[1-9]\d*$/.test(port) && Number(port) <= 65535
-      ) ||
+      ![rule.globalPort, rule.insidePort].every((port) => parseNatPort(port)) ||
       typeof rule.enabled !== 'boolean'
     ) {
       throw new Error(

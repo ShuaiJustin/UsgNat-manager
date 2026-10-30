@@ -170,6 +170,7 @@ export interface ElectronAPI {
     testConnection: (id: string) => Promise<ConnectionTestResult>;
     testDirectConnection: (config: DirectConnectionConfig) => Promise<ConnectionTestResult>;
     trustHostKey: (id: string, fingerprint: string) => Promise<IpcResult>;
+    replaceHostKey: (id: string, fingerprint: string) => Promise<IpcResult>;
   };
   rule: {
     getAll: (deviceId: string) => Promise<NatRule[]>;

@@ -3,6 +3,105 @@ import test from 'node:test';
 
 import { usgParser } from './usg-parser.ts';
 
+test('port ranges round trip through all supported NAT syntaxes without losing options', () => {
+  for (const name of ['VpnIpTest2 ', 'name VpnIpTest2 ', '']) {
+    const line = `nat server ${name}protocol tcp global 116.232.116.72 20000 20053 inside 172.16.51.151 20000 20053 no-reverse unr-route`;
+    const [rule] = usgParser.parseNatServerSnapshot(line, true);
+    assert.equal(rule.globalPort, '20000-20053');
+    assert.equal(rule.insidePort, '20000-20053');
+    assert.equal(usgParser.generateNatServerCommand(rule), line);
+    assert.deepEqual(usgParser.generateSyncToDeviceCommands([rule], [rule]), []);
+    const deletion = usgParser.generateDeleteNatServerCommand(rule);
+    if (!name) assert.equal(deletion, `undo ${line.replace(' no-reverse unr-route', '')}`);
+    else assert.equal(deletion, 'undo nat server name VpnIpTest2');
+    const commands = usgParser.generateBatchUpdateIPCommands([rule], '203.0.113.10', [rule]);
+    assert.ok(commands.includes(line.replace('116.232.116.72', '203.0.113.10')));
+    assert.ok(commands.includes(deletion));
+    assert.deepEqual(usgParser.parseNatServerList(line), [rule]);
+  }
+});
+
+test('mixed single and range ports preserve service names, boundaries and shifted ranges', () => {
+  for (const [outside, inside, expectedOutside, expectedInside] of [
+    ['1 65535', '1 65535', '1-65535', '1-65535'],
+    ['20000 20053', '30000 30053', '20000-20053', '30000-30053'],
+    ['20000 20053', 'www', '20000-20053', '80'],
+    ['https', '8443', '443', '8443'],
+  ]) {
+    const [rule] = usgParser.parseNatServerSnapshot(
+      `nat server web protocol tcp global 1.2.3.4 ${outside} inside 192.168.1.2 ${inside}`,
+      true
+    );
+    assert.equal(rule.globalPort, expectedOutside);
+    assert.equal(rule.insidePort, expectedInside);
+    assert.deepEqual(
+      usgParser.parseNatServerSnapshot(usgParser.generateNatServerCommand(rule), true),
+      [rule]
+    );
+  }
+});
+
+test('range parsing and writes reject reversed, out-of-bounds and injected ports', () => {
+  for (const ports of ['0 80', '80 65536', '90 80', '80 80', '80 81 82', '080 90']) {
+    assert.throws(() =>
+      usgParser.parseNatServerSnapshot(
+        `nat server web protocol tcp global 1.2.3.4 ${ports} inside 192.168.1.2 80`,
+        true
+      )
+    );
+    assert.throws(() =>
+      usgParser.parseNatServerSnapshot(
+        `nat server web protocol tcp global 1.2.3.4 80 inside 192.168.1.2 ${ports}`,
+        true
+      )
+    );
+  }
+  for (const port of [
+    '0-80',
+    '80-65536',
+    '90-80',
+    '80-80',
+    '80-81-82',
+    '080-90',
+    '80\nsave',
+    '80 90',
+  ]) {
+    for (const field of ['globalPort', 'insidePort']) {
+      assert.throws(() => usgParser.generateNatServerCommand({ ...safetyRule, [field]: port }));
+    }
+  }
+  assert.throws(() =>
+    usgParser.parseNatServerSnapshot(
+      'nat server web protocol tcp global 1.2.3.4 80 90 inside 192.168.1.2 80 90 vpn-instance secret',
+      true
+    )
+  );
+});
+
+test('range collisions include contained single ports and shared boundaries but allow adjacent ranges', () => {
+  const range = { ...safetyRule, globalPort: '20000-20053', insidePort: '30000-30053' };
+  for (const port of ['20000', '20030', '20053', '19999-20000', '20053-21000', '19999-21000']) {
+    const other = { ...safetyRule, ruleName: 'other', globalPort: port };
+    assert.throws(
+      () => usgParser.generateSyncToDeviceCommands([], [range, other]),
+      /同一公网地址端口/
+    );
+    assert.doesNotThrow(() =>
+      usgParser.generateSyncToDeviceCommands([], [range, { ...other, protocol: 'UDP' }])
+    );
+    assert.throws(
+      () => usgParser.generateSyncToDeviceCommands([], [range, { ...other, protocol: 'ALL' }]),
+      /同一公网地址端口/
+    );
+  }
+  assert.doesNotThrow(() =>
+    usgParser.generateSyncToDeviceCommands(
+      [],
+      [range, { ...safetyRule, ruleName: 'adjacent', globalPort: '20054-21000' }]
+    )
+  );
+});
+
 const safetyRule = {
   ruleName: 'web',
   protocol: 'TCP' as const,

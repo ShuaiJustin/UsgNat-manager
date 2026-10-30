@@ -9,6 +9,7 @@
     "strict": true,
     "forceConsistentCasingInFileNames": true,
     "moduleResolution": "node",
+    "rewriteRelativeImportExtensions": true,
     "resolveJsonModule": true,
     "outDir": "dist/main",
     "rootDir": "src/main"

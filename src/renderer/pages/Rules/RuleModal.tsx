@@ -3,6 +3,7 @@ import { App, Checkbox, Form, Input, Modal, Select, Space, Switch } from 'antd';
 import { useMutation } from '@tanstack/react-query';
 
 import type { NatRule } from '@/types';
+import { parseNatPort } from '../../../main/services/nat-port.ts';
 
 interface RuleModalProps {
   open: boolean;
@@ -151,9 +152,10 @@ const RuleModal: React.FC<RuleModalProps> = ({ open, rule, deviceId, onClose, on
                     return Promise.resolve();
                   }
 
-                  const port = Number(value);
-                  if (Number.isNaN(port) || port < 1 || port > 65535) {
-                    return Promise.reject(new Error('端口必须在 1-65535 之间'));
+                  if (!parseNatPort(value)) {
+                    return Promise.reject(
+                      new Error('请输入 1-65535 的单端口或递增范围，例如 20000-20053')
+                    );
                   }
 
                   return Promise.resolve();
@@ -161,7 +163,7 @@ const RuleModal: React.FC<RuleModalProps> = ({ open, rule, deviceId, onClose, on
               },
             ]}
           >
-            <Input placeholder="8080" type="number" />
+            <Input placeholder="8080 或 20000-20053" />
           </Form.Item>
         </div>
 
@@ -206,9 +208,10 @@ const RuleModal: React.FC<RuleModalProps> = ({ open, rule, deviceId, onClose, on
                     return Promise.resolve();
                   }
 
-                  const port = Number(value);
-                  if (Number.isNaN(port) || port < 1 || port > 65535) {
-                    return Promise.reject(new Error('端口必须在 1-65535 之间'));
+                  if (!parseNatPort(value)) {
+                    return Promise.reject(
+                      new Error('请输入 1-65535 的单端口或递增范围，例如 20000-20053')
+                    );
                   }
 
                   return Promise.resolve();
@@ -216,7 +219,7 @@ const RuleModal: React.FC<RuleModalProps> = ({ open, rule, deviceId, onClose, on
               },
             ]}
           >
-            <Input placeholder="80" type="number" />
+            <Input placeholder="80 或 20000-20053" />
           </Form.Item>
         </div>
 

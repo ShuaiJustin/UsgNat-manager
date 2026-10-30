@@ -4,6 +4,7 @@ import { generateKeyPairSync, sign } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import fs from 'node:fs';
 import type { IncomingMessage } from 'node:http';
+import { createServer } from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -17,6 +18,8 @@ import {
   assertSafeUpdateRedirect,
   assertUpdaterPlatformSupported,
   buildLatestVersionApiUrl,
+  DEFAULT_UPDATE_SERVER_URLS,
+  fetchUpdateManifest,
   createDownloadProgressReporter,
   createInstallerLaunchArgs,
   createUpdatePolicySignaturePayload,
@@ -47,6 +50,77 @@ type UpdateStateGuard = (
   current: 'idle' | 'checking' | 'downloading' | 'installing',
   requested: 'checking' | 'downloading' | 'installing'
 ) => void;
+
+test('default source is the GitHub latest release manifest', () => {
+  assert.deepEqual(DEFAULT_UPDATE_SERVER_URLS, [
+    'https://github.com/chengchnegcheng/UsgNat-manager/releases/latest/download/latest.json',
+  ]);
+  assert.equal(
+    buildLatestVersionApiUrl(DEFAULT_UPDATE_SERVER_URLS[0]),
+    DEFAULT_UPDATE_SERVER_URLS[0]
+  );
+});
+
+test('GitHub asset redirects allow only the exact HTTPS asset host', () => {
+  const source = DEFAULT_UPDATE_SERVER_URLS[0];
+  assert.doesNotThrow(() =>
+    assertSafeUpdateRedirect(
+      source,
+      'https://release-assets.githubusercontent.com/asset?signature=x'
+    )
+  );
+  for (const target of [
+    'http://release-assets.githubusercontent.com/asset',
+    'https://release-assets.githubusercontent.com.evil.test/asset',
+    'https://user@release-assets.githubusercontent.com/asset',
+    'https://release-assets.githubusercontent.com:444/asset',
+    'https://example.com/asset',
+  ])
+    assert.throws(() => assertSafeUpdateRedirect(source, target), /不安全/);
+  assert.throws(
+    () =>
+      assertSafeUpdateRedirect(
+        'https://github.com/login',
+        'https://release-assets.githubusercontent.com/asset'
+      ),
+    /不安全/
+  );
+});
+
+test('manifest HTTP flow follows relative redirects, keeps query and user agent, and rejects failures', async (t) => {
+  const server = createServer((req, res) => {
+    if (req.url === '/start') {
+      res.writeHead(302, { location: '/manifest.json?signature=ok' }).end();
+    } else if (req.url === '/manifest.json?signature=ok') {
+      assert.equal(req.headers['user-agent'], 'USG-Test/1.0.0');
+      res.end('{"version":"1.2.3"}');
+    } else if (req.url === '/loop') {
+      res.writeHead(302, { location: '/loop' }).end();
+    } else if (req.url === '/unsafe') {
+      res.writeHead(302, { location: 'https://example.com/manifest.json' }).end();
+    } else if (req.url === '/no-location') {
+      res.writeHead(302).end();
+    } else if (req.url === '/large') {
+      res.end('x'.repeat(1024 * 1024 + 1));
+    } else {
+      res.writeHead(404).end();
+    }
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(
+    () =>
+      new Promise<void>((resolve, reject) => server.close((err) => (err ? reject(err) : resolve())))
+  );
+  const address = server.address();
+  assert.ok(address && typeof address !== 'string');
+  const base = `http://127.0.0.1:${address.port}`;
+  assert.equal(await fetchUpdateManifest(`${base}/start`, 'USG-Test/1.0.0'), '{"version":"1.2.3"}');
+  await assert.rejects(fetchUpdateManifest(`${base}/loop`, 'test'), /重定向次数/);
+  await assert.rejects(fetchUpdateManifest(`${base}/unsafe`, 'test'), /不安全/);
+  await assert.rejects(fetchUpdateManifest(`${base}/no-location`, 'test'), /location/);
+  await assert.rejects(fetchUpdateManifest(`${base}/missing`, 'test'), /404/);
+  await assert.rejects(fetchUpdateManifest(`${base}/large`, 'test'), /超过|过大|大小/);
+});
 
 type ExpectedArtifactGuard = (
   expectedVersion: string,

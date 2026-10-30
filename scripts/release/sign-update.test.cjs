@@ -9,6 +9,7 @@ const {
   PINNED_UPDATE_PUBLIC_KEY_SHA256,
   assertInstallerVersionMatchesRelease,
   createPolicySignaturePayload,
+  createReleaseManifest,
   generateSigningKeyPair,
   getPublicKeyFingerprint,
   signUpdate,
@@ -32,6 +33,24 @@ const fixtureOptionsForKey = (publicKeyPath) => ({
   expectedPublicKeyFingerprint: getPublicKeyFingerprint(
     fs.readFileSync(publicKeyPath, 'utf8')
   ),
+});
+
+test('GitHub manifest binds installer and release policy with client-compatible signatures', async (t) => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'usg-release-manifest-'));
+  t.after(() => fs.rmSync(tempDir, { recursive: true, force: true }));
+  const installer = path.join(tempDir, 'USG-NAT-Manager-Setup-1.2.3.exe');
+  const privateKey = path.join(tempDir, 'private.pem');
+  const publicKey = path.join(tempDir, 'public.pem');
+  fs.writeFileSync(installer, 'installer fixture');
+  generateSigningKeyPair(privateKey, publicKey);
+  const manifest = await createReleaseManifest(installer, releaseMetadata, privateKey, fixtureOptionsForKey(publicKey));
+  assert.equal(manifest.files.full.url, 'https://github.com/chengchnegcheng/UsgNat-manager/releases/download/v1.2.3/USG-NAT-Manager-Setup-1.2.3.exe');
+  const helpers = await import('../../src/main/services/custom-updater-helpers.ts');
+  const key = fs.readFileSync(publicKey, 'utf8');
+  assert.equal(helpers.parseVerifiedUpdateVersionInfo(JSON.parse(JSON.stringify(manifest)), key).version, '1.2.3');
+  helpers.validateDownloadedUpdate(manifest.version, manifest.files.full, fs.statSync(installer).size,
+    crypto.createHash('sha256').update(fs.readFileSync(installer)).digest('hex'), key);
+  assert.throws(() => helpers.parseVerifiedUpdateVersionInfo({ ...manifest, mandatory: true }, key), /签名/);
 });
 
 test('release key gate matches the public key pinned by the client', () => {

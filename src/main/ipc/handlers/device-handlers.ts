@@ -203,6 +203,9 @@ export function registerDeviceHandlers() {
   guardedHandle('device:trustHostKey', async (_event, id: string, fingerprint: string) =>
     sshManager.withDeviceOperation(id, () => sshManager.trustHostKey(id, fingerprint))
   );
+  guardedHandle('device:replaceHostKey', async (_event, id: string, fingerprint: string) =>
+    sshManager.withDeviceOperation(id, () => sshManager.replaceHostKey(id, fingerprint))
+  );
 
   guardedHandle('device:testDirectConnection', async (_event, config: DirectConnectionPayload) => {
     try {

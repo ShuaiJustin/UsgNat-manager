@@ -278,6 +278,23 @@ async function verifyUpdate(
   return { sha256, signaturePath, policySignaturePath, size, version: release.version };
 }
 
+async function createReleaseManifest(installerPath, metadata, privateKeyPath, options = {}) {
+  const release = normalizeReleaseMetadata(metadata);
+  const result = await signUpdate(installerPath, release, privateKeyPath, undefined, undefined, options);
+  return {
+    ...release,
+    policySignature: fs.readFileSync(result.policySignaturePath, 'ascii').trim(),
+    files: {
+      full: {
+        url: `https://github.com/chengchnegcheng/UsgNat-manager/releases/download/v${release.version}/USG-NAT-Manager-Setup-${release.version}.exe`,
+        size: result.size,
+        sha256: result.sha256,
+        signature: fs.readFileSync(result.signaturePath, 'ascii').trim(),
+      },
+    },
+  };
+}
+
 async function main() {
   const [command, ...args] = process.argv.slice(2);
 
@@ -297,6 +314,16 @@ async function main() {
     return;
   }
 
+  if (command === 'manifest' && args.length === 3) {
+    const metadata = readReleaseMetadata(args[1]);
+    assertReleaseVersionMatchesPackage(metadata.version);
+    const manifest = await createReleaseManifest(args[0], metadata, args[2]);
+    const outputPath = path.join(path.dirname(args[0]), 'latest.json');
+    fs.writeFileSync(outputPath, `${JSON.stringify(manifest, null, 2)}\n`);
+    process.stdout.write(`Release manifest: ${outputPath}\n`);
+    return;
+  }
+
   if (command === 'verify' && (args.length === 3 || args.length === 4)) {
     const metadata = readReleaseMetadata(args[1]);
     assertReleaseVersionMatchesPackage(metadata.version);
@@ -311,6 +338,7 @@ async function main() {
     'Usage:\n' +
       '  node sign-update.cjs generate <private-key.pem> <public-key.pem>\n' +
       '  node sign-update.cjs sign <installer> <release-metadata.json> <private-key.pem|wincred:target> [installer.sig]\n' +
+      '  node sign-update.cjs manifest <installer> <release-metadata.json> <private-key.pem|wincred:target>\n' +
       '  node sign-update.cjs verify <installer> <release-metadata.json> <public-key.pem> [installer.sig]'
   );
 }
@@ -329,6 +357,7 @@ module.exports = {
   calculateSha256,
   createPolicySignaturePayload,
   createSignaturePayload,
+  createReleaseManifest,
   generateSigningKeyPair,
   getPublicKeyFingerprint,
   signUpdate,

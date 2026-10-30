@@ -36,5 +36,7 @@ export interface ConnectionTestResult {
     host: string;
     port: number;
     changed: boolean;
+    algorithm?: string;
+    trustedFingerprint?: string;
   };
 }

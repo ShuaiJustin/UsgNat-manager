@@ -16,6 +16,7 @@ import { useMutation } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 
 import type { Credential, Device } from '@/types';
+import { promptHostKeyTrust, type ObservedHostKey } from './hostKeyTrust';
 import {
   buildCredentialPayload,
   getDeviceAccessValidationError,
@@ -62,42 +63,13 @@ const DeviceModal: React.FC<DeviceModalProps> = ({ open, device, onClose, onSucc
   const selectedConnectionType = Form.useWatch('connectionType', form) || 'SSH';
   const selectedFormAuthType = Form.useWatch('authType', form) || authType;
 
-  const showFirstTrust = (
-    deviceId: string | undefined,
-    hostKey?: { fingerprint: string; host: string; port: number; changed: boolean }
-  ) => {
+  const showHostKeyPrompt = (deviceId: string | undefined, hostKey?: ObservedHostKey) => {
     if (!hostKey) return;
-    if (hostKey.changed) {
-      message.error('SSH主机指纹已变化，连接已拒绝。请管理员核查，禁止直接覆盖信任。');
-      return;
-    }
     if (!deviceId) {
       message.info('临时连接已拒绝未知主机。请先保存设备，再测试连接并核对首次主机指纹。');
       return;
     }
-    modal.confirm({
-      title: '首次信任 SSH 主机',
-      content: (
-        <div>
-          <p>连接已拒绝。请通过设备控制台等可信渠道核对以下指纹；确认表示管理员已完成核对。</p>
-          <p>
-            {hostKey.host}:{hostKey.port}
-          </p>
-          <code style={{ wordBreak: 'break-all' }}>{hostKey.fingerprint}</code>
-        </div>
-      ),
-      okText: '已核对指纹，信任此设备',
-      cancelText: '取消',
-      onOk: async () => {
-        const trust = await window.electronAPI.device.trustHostKey(deviceId, hostKey.fingerprint);
-        if (!trust.success) {
-          message.error(trust.message);
-          return Promise.reject(new Error(trust.message));
-        }
-        message.info(trust.message);
-        onSuccess();
-      },
-    });
+    promptHostKeyTrust({ modal, message, deviceId, hostKey, onTrusted: onSuccess });
   };
 
   useEffect(() => {
@@ -296,7 +268,7 @@ const DeviceModal: React.FC<DeviceModalProps> = ({ open, device, onClose, onSucc
                   message.success(`连接测试成功 - 延迟 ${result.latency}ms`);
                 } else {
                   message.warning(`连接测试失败: ${result.message}`);
-                  showFirstTrust(savedDeviceId, result.hostKey);
+                  showHostKeyPrompt(savedDeviceId, result.hostKey);
                 }
                 onSuccess();
               }
@@ -357,7 +329,7 @@ const DeviceModal: React.FC<DeviceModalProps> = ({ open, device, onClose, onSucc
           message.success(`${t('devices.connectionSuccess')}! ${result.latency}ms`);
         } else {
           message.error(`${t('devices.connectionFailed')}: ${result.message}`);
-          showFirstTrust(device?.id, result.hostKey);
+          showHostKeyPrompt(device?.id, result.hostKey);
         }
       } catch (error) {
         hideLoading();

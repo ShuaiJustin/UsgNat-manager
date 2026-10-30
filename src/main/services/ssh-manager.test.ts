@@ -374,3 +374,48 @@ test('command timeouts say where the read stalled without echoing device output'
   assert.match(running, /已翻页 2 次/);
   assert.match(running, /\[Y\/N\]/);
 });
+
+test('host key rejections say whether the key was never trusted or has changed', async () => {
+  const helpers = await import('./ssh-manager-helpers.ts');
+  assert.equal(helpers.isHostKeyRejection(new Error('Host denied (verification failed)')), true);
+  assert.match(helpers.describeHostKeyRejection(undefined), /尚未确认/);
+  const changed = helpers.describeHostKeyRejection({
+    fingerprint: 'SHA256:new',
+    changed: true,
+    trustedFingerprint: 'SHA256:old',
+  });
+  assert.match(changed, /SHA256:old/);
+  assert.match(changed, /SHA256:new/);
+});
+
+test('a host key can only be replaced through a fresh changed challenge for this address', async () => {
+  const helpers = await import('./ssh-manager-helpers.ts');
+  const device = { host: '172.16.51.1', port: 2025 };
+  const challenge = {
+    fingerprint: 'SHA256:new',
+    host: device.host,
+    port: device.port,
+    changed: true,
+    expiresAt: 2000,
+  };
+  assert.equal(helpers.isValidHostKeyReplacement(challenge, device, 'SHA256:new', 1000), true);
+  assert.equal(helpers.isValidHostKeyReplacement(challenge, device, 'SHA256:other', 1000), false);
+  assert.equal(helpers.isValidHostKeyReplacement(challenge, device, 'SHA256:new', 3000), false);
+  assert.equal(
+    helpers.isValidHostKeyReplacement({ ...challenge, changed: false }, device, 'SHA256:new', 1000),
+    false
+  );
+  assert.equal(
+    helpers.isValidHostKeyReplacement(challenge, { ...device, port: 22 }, 'SHA256:new', 1000),
+    false
+  );
+});
+
+test('the host key algorithm is read from the key blob', async () => {
+  const helpers = await import('./ssh-manager-helpers.ts');
+  const name = Buffer.from('ssh-ed25519');
+  const blob = Buffer.concat([Buffer.from([0, 0, 0, name.length]), name, Buffer.alloc(32)]);
+  assert.equal(helpers.getHostKeyAlgorithm(blob), 'ssh-ed25519');
+  assert.equal(helpers.getHostKeyAlgorithm(Buffer.from([1, 2])), undefined);
+  assert.equal(helpers.isHostKeyRejection(new Error('Signature verification failed')), false);
+});

@@ -4,16 +4,25 @@ import { Buffer } from 'node:buffer';
 export const createHostKeyVerifier =
   (
     trustedFingerprint?: string,
-    onObserved?: (fingerprint: string) => void
+    onObserved?: (fingerprint: string, algorithm?: string) => void
   ): ((key: Buffer) => boolean) =>
   (key) => {
     const fingerprint = `SHA256:${createHash('sha256').update(key).digest('base64').replace(/=+$/, '')}`;
-    onObserved?.(fingerprint);
+    onObserved?.(fingerprint, getHostKeyAlgorithm(key));
     if (!trustedFingerprint) return false;
     const expected = Buffer.from(trustedFingerprint);
     const actual = Buffer.from(fingerprint);
     return expected.length === actual.length && timingSafeEqual(expected, actual);
   };
+
+// The SSH key blob starts with its algorithm name (uint32 length + name), e.g. "ssh-rsa".
+export const getHostKeyAlgorithm = (key: Buffer): string | undefined => {
+  if (key.length < 4) return undefined;
+  const length = key.readUInt32BE(0);
+  return length > 0 && length < 64 && key.length >= 4 + length
+    ? key.subarray(4, 4 + length).toString('ascii')
+    : undefined;
+};
 
 export const getSingleCommandCloseResult = (completed: boolean, output: string) => {
   const error = completed ? getDeviceCommandError(output) : '设备在命令完成前关闭连接，结果不完整';
@@ -30,9 +39,11 @@ export const isBatchCloseComplete = (
 
 export type HostKeyChallenge = {
   fingerprint: string;
+  algorithm?: string;
   host: string;
   port: number;
   changed: boolean;
+  trustedFingerprint?: string;
   expiresAt: number;
 };
 export const isValidFirstHostKeyTrust = (
@@ -298,3 +309,36 @@ export const describeCommandTimeout = (state: {
   ].filter(Boolean);
   return `命令执行超时（${details.join('；')}）`;
 };
+
+// ssh2 reports a rejected host key only as "Host denied (verification failed)"; say whether the
+// key was never confirmed or no longer matches, which need different actions.
+export const describeHostKeyRejection = (hostKey?: {
+  fingerprint: string;
+  algorithm?: string;
+  changed: boolean;
+  trustedFingerprint?: string;
+}): string =>
+  hostKey?.changed
+    ? `设备主机指纹与已信任的不一致，已拒绝连接（已信任：${hostKey.trustedFingerprint ?? '未知'}；设备当前：${hostKey.fingerprint}${hostKey.algorithm ? `，${hostKey.algorithm}` : ''}）。如确认是设备更换了 SSH 密钥或双机切换，请到“设备管理”点“测试连接”，核实后替换指纹`
+    : '尚未确认该设备的主机指纹，已拒绝连接。请到“设备管理”点“测试连接”，核对指纹后信任此设备';
+
+// Only ssh2's hostVerifier rejection; signature failures during the handshake are different.
+export const isHostKeyRejection = (error: Error): boolean => /host denied/i.test(error.message);
+
+// Replacing a trusted key needs a fresh "changed" challenge for exactly this device address and
+// the fingerprint the administrator verified.
+export const isValidHostKeyReplacement = (
+  challenge: HostKeyChallenge | undefined,
+  device: { host: string; port: number } | null,
+  fingerprint: string,
+  now = Date.now()
+): boolean =>
+  Boolean(
+    challenge &&
+      device &&
+      challenge.changed &&
+      challenge.expiresAt >= now &&
+      challenge.fingerprint === fingerprint &&
+      challenge.host === device.host &&
+      challenge.port === device.port
+  );

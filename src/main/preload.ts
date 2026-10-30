@@ -62,6 +62,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.invoke('device:testDirectConnection', config),
     trustHostKey: (id: string, fingerprint: string) =>
       ipcRenderer.invoke('device:trustHostKey', id, fingerprint),
+    replaceHostKey: (id: string, fingerprint: string) =>
+      ipcRenderer.invoke('device:replaceHostKey', id, fingerprint),
   },
 
   // 规则管理

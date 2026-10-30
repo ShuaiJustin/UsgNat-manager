@@ -1,3 +1,4 @@
+import { natPortsOverlap, parseNatPort } from './nat-port.ts';
 import type { ParsedNatRule } from './usg-parser';
 
 type AutomationRuleLike = {
@@ -157,23 +158,20 @@ export const collectIntegrityCheckIssues = (
   newIP: string
 ): string[] => {
   const issues: string[] = [];
-  const ruleKeys = new Map<string, string[]>();
-
-  for (const rule of rules) {
-    if (!rule.enabled) {
-      continue;
-    }
-
-    const key = `${rule.protocol}:${newIP}:${rule.globalPort}`;
-    if (!ruleKeys.has(key)) {
-      ruleKeys.set(key, []);
-    }
-    ruleKeys.get(key)?.push(rule.ruleName || '未命名规则');
-  }
-
-  for (const [key, ruleNames] of ruleKeys.entries()) {
-    if (ruleNames.length > 1) {
-      issues.push(`规则冲突: ${ruleNames.join(', ')} 使用相同的 ${key}`);
+  const enabled = rules.filter((rule) => rule.enabled);
+  // O(n²) pair checks, matching the manual-write guard; ranges are never expanded into ports.
+  for (const [index, rule] of enabled.entries()) {
+    for (const other of enabled.slice(index + 1)) {
+      const protocol = rule.protocol?.toUpperCase();
+      const otherProtocol = other.protocol?.toUpperCase();
+      if (
+        (protocol === otherProtocol || protocol === 'ALL' || otherProtocol === 'ALL') &&
+        natPortsOverlap(rule.globalPort || '', other.globalPort || '')
+      ) {
+        issues.push(
+          `规则冲突: ${rule.ruleName}, ${other.ruleName} 使用重叠的 ${newIP}:${rule.globalPort}`
+        );
+      }
     }
   }
 
@@ -186,13 +184,11 @@ export const collectIntegrityCheckIssues = (
       continue;
     }
 
-    const globalPort = parseInt(rule.globalPort || '', 10);
-    if (isNaN(globalPort) || globalPort < 1 || globalPort > 65535) {
+    if (!parseNatPort(rule.globalPort)) {
       issues.push(`规则 ${rule.ruleName} 端口无效: ${rule.globalPort}`);
     }
 
-    const insidePort = parseInt(rule.insidePort || '', 10);
-    if (isNaN(insidePort) || insidePort < 1 || insidePort > 65535) {
+    if (!parseNatPort(rule.insidePort)) {
       issues.push(`规则 ${rule.ruleName} 内网端口无效: ${rule.insidePort}`);
     }
   }

@@ -3,6 +3,8 @@ import { verify, type KeyLike } from 'node:crypto';
 import type { EventEmitter } from 'node:events';
 import { existsSync, unlinkSync, type WriteStream } from 'node:fs';
 import type { IncomingMessage } from 'node:http';
+import * as http from 'node:http';
+import * as https from 'node:https';
 import { URL } from 'node:url';
 
 const DAILY_INTERVAL_MS = 24 * 60 * 60 * 1000;
@@ -10,6 +12,10 @@ const WEEKLY_INTERVAL_MS = 7 * 24 * 60 * 60 * 1000;
 const MAX_UPDATE_SIZE_BYTES = 500 * 1024 * 1024;
 const SEMANTIC_VERSION_PATTERN = /^\d+\.\d+\.\d+$/;
 const SHA256_PATTERN = /^[a-f\d]{64}$/i;
+
+export const DEFAULT_UPDATE_SERVER_URLS = [
+  'https://github.com/chengchnegcheng/UsgNat-manager/releases/latest/download/latest.json',
+];
 
 export const UPDATE_SIGNING_PUBLIC_KEY = `-----BEGIN PUBLIC KEY-----
 MCowBQYDK2VwAyEAu8pAbC0+vCTEYT7EK9ccvdUgEaT6nFS2XPXvkvL13GQ=
@@ -250,13 +256,23 @@ export const assertSafeUpdateRedirect = (sourceUrl: string, targetUrl: string): 
     source.protocol === 'http:' &&
     target.protocol === 'https:' &&
     source.hostname === target.hostname;
+  const isGitHubAssetRedirect =
+    source.protocol === 'https:' &&
+    target.protocol === 'https:' &&
+    !source.port &&
+    !target.port &&
+    ((source.hostname === 'github.com' &&
+      /^\/[^/]+\/[^/]+\/releases\/(?:download|latest\/download)\//.test(source.pathname) &&
+      target.hostname === 'release-assets.githubusercontent.com') ||
+      (source.hostname === 'release-assets.githubusercontent.com' &&
+        target.hostname === 'release-assets.githubusercontent.com'));
 
   if (
     !supportedProtocols.has(source.protocol) ||
     !supportedProtocols.has(target.protocol) ||
     target.username.length > 0 ||
     target.password.length > 0 ||
-    (!isSameOrigin && !isSameHostHttpsUpgrade)
+    (!isSameOrigin && !isSameHostHttpsUpgrade && !isGitHubAssetRedirect)
   ) {
     throw new Error('不安全的更新重定向');
   }
@@ -519,8 +535,48 @@ export const assertSecureUpdateServerUrl = (
   }
 };
 
-export const buildLatestVersionApiUrl = (serverUrl: string): string =>
-  new URL('api/versions/latest', ensureTrailingSlash(serverUrl)).href;
+export const buildLatestVersionApiUrl = (serverUrl: string): string => {
+  const url = new URL(serverUrl);
+  return url.pathname.endsWith('.json')
+    ? url.href
+    : new URL('api/versions/latest', ensureTrailingSlash(serverUrl)).href;
+};
+
+// Bounded redirects and a 1 MiB body limit keep manifest requests small.
+export const fetchUpdateManifest = (
+  url: string,
+  userAgent: string,
+  redirectCount = 0
+): Promise<string> =>
+  new Promise((resolve, reject) => {
+    const parsedUrl = new URL(url);
+    const client = parsedUrl.protocol === 'https:' ? https : http;
+    const req = client.get(parsedUrl, { headers: { 'User-Agent': userAgent } }, (res) => {
+      if ([301, 302, 303, 307, 308].includes(res.statusCode ?? 0)) {
+        res.once('error', reject);
+        res.resume();
+        try {
+          if (!res.headers.location) throw new Error('重定向缺少 location 头');
+          if (redirectCount >= 5) throw new Error('重定向次数超过限制');
+          const target = new URL(res.headers.location, parsedUrl).href;
+          assertSafeUpdateRedirect(url, target);
+          resolve(fetchUpdateManifest(target, userAgent, redirectCount + 1));
+        } catch (error) {
+          reject(error);
+        }
+        return;
+      }
+      if (res.statusCode !== 200) {
+        res.once('error', reject);
+        res.resume();
+        reject(new Error(`服务器返回错误: ${res.statusCode}`));
+        return;
+      }
+      readUpdateManifestResponse(res, 1024 * 1024).then(resolve, reject);
+    });
+    req.once('error', reject);
+    req.setTimeout(10000, () => req.destroy(new Error('请求超时')));
+  });
 
 export const resolveUpdateAssetUrl = (assetUrl: string, serverUrl: string): string => {
   if (assetUrl.startsWith('http://') || assetUrl.startsWith('https://')) {

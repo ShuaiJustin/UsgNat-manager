@@ -19,6 +19,34 @@ import {
 } from './automation-service-helpers.ts';
 import { usgParser } from './usg-parser.ts';
 
+test('integrity checks validate full ranges and catch overlapping public ports before automation', () => {
+  const range = {
+    ruleName: 'range',
+    protocol: 'TCP',
+    enabled: true,
+    globalPort: '20000-20053',
+    insidePort: '30000-30053',
+    insideIp: '192.0.2.1',
+  };
+  assert.deepEqual(collectIntegrityCheckIssues([range], '203.0.113.1'), []);
+  for (const globalPort of ['20030', '20053-21000']) {
+    assert.ok(
+      collectIntegrityCheckIssues(
+        [range, { ...range, ruleName: 'overlap', globalPort }],
+        '203.0.113.1'
+      ).some((issue) => issue.includes('规则冲突'))
+    );
+  }
+  for (const port of ['20000-70000', '20053-20000', '80junk']) {
+    assert.ok(
+      collectIntegrityCheckIssues(
+        [{ ...range, globalPort: port, insidePort: port }],
+        '203.0.113.1'
+      ).some((issue) => issue.includes('端口无效'))
+    );
+  }
+});
+
 type AutomationRunControllerLike = {
   begin: () => number;
   isCancelled: (token: number) => boolean;

@@ -7,6 +7,7 @@ import type { Device } from '@/types';
 import { createTablePagination } from '@/utils/tablePagination';
 import DeviceListToolbar from './components/DeviceListToolbar';
 import DeviceModal from './DeviceModal';
+import { promptHostKeyTrust } from './hostKeyTrust';
 import { filterDevices } from './deviceListHelpers';
 import { createDeviceColumns } from './deviceTableColumns';
 
@@ -62,37 +63,14 @@ const Devices: React.FC = () => {
         message.success(`${t('devices.connectionSuccess')} - ${result.latency}ms`);
       } else {
         message.error(`${t('devices.connectionFailed')}: ${result.message}`);
-        if (result.hostKey && !result.hostKey.changed) {
-          const { fingerprint, host, port } = result.hostKey;
-          modal.confirm({
-            title: '首次信任 SSH 主机',
-            content: (
-              <div>
-                <p>
-                  连接已拒绝。请通过设备控制台等可信渠道核对以下指纹；确认表示管理员已完成核对。
-                </p>
-                <p>
-                  {host}:{port}
-                </p>
-                <code style={{ wordBreak: 'break-all' }}>{fingerprint}</code>
-              </div>
-            ),
-            okText: '已核对指纹，信任此设备',
-            cancelText: '取消',
-            onOk: async () => {
-              const trust = await window.electronAPI.device.trustHostKey(deviceId, fingerprint);
-              if (!trust.success) {
-                message.error(trust.message);
-                return Promise.reject(new Error(trust.message));
-              }
-              message.info(trust.message);
-              testConnectionMutation.mutate(deviceId);
-            },
+        if (result.hostKey) {
+          promptHostKeyTrust({
+            modal,
+            message,
+            deviceId,
+            hostKey: result.hostKey,
+            onTrusted: () => testConnectionMutation.mutate(deviceId),
           });
-        } else if (result.hostKey?.changed) {
-          message.error(
-            '主机指纹已变化，已阻止连接。请管理员核查设备身份与网络，不允许通过首次信任覆盖。'
-          );
         }
       }
       void queryClient.invalidateQueries({ queryKey: ['devices'] });

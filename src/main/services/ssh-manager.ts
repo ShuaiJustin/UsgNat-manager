@@ -14,6 +14,10 @@ import {
   isCliPromptReady,
   isDevicePromptReady,
   describeCommandTimeout,
+  describeHostKeyRejection,
+  isHostKeyRejection,
+  isValidHostKeyReplacement,
+  type HostKeyChallenge,
   DISABLE_PAGING_COMMAND,
   type CommandStage,
   isConfirmationPromptPending,
@@ -55,7 +59,14 @@ export interface SSHConnectionResult {
   message: string;
   latency?: number;
   error?: Error;
-  hostKey?: { fingerprint: string; host: string; port: number; changed: boolean };
+  hostKey?: {
+    fingerprint: string;
+    algorithm?: string;
+    host: string;
+    port: number;
+    changed: boolean;
+    trustedFingerprint?: string;
+  };
 }
 
 /**
@@ -91,10 +102,7 @@ export class SSHManager extends EventEmitter {
       this.deviceOperations.delete(deviceId);
     }
   }
-  private pendingHostKeys = new Map<
-    string,
-    { fingerprint: string; host: string; port: number; changed: boolean; expiresAt: number }
-  >();
+  private pendingHostKeys = new Map<string, HostKeyChallenge>();
 
   private async getTrustedHostKey(
     deviceId: string,
@@ -132,17 +140,49 @@ export class SSHManager extends EventEmitter {
     return { success: true, message: '已保存管理员确认的主机指纹，请重新测试连接' };
   }
 
+  // An administrator-confirmed replacement of a changed host key. It needs a "changed"
+  // challenge the main process observed in a real handshake during the last five minutes
+  // (from a test connection or any other login) and is always logged.
+  async replaceHostKey(deviceId: string, fingerprint: string): Promise<SSHConnectionResult> {
+    const challenge = this.pendingHostKeys.get(deviceId);
+    const device = await prisma.device.findUnique({ where: { id: deviceId } });
+    const existing = await prisma.config.findUnique({ where: { key: `ssh-host:${deviceId}` } });
+    if (!existing || !device || !isValidHostKeyReplacement(challenge, device, fingerprint)) {
+      return {
+        success: false,
+        message: '指纹替换确认已过期、目标变化或指纹不匹配，请重新测试连接后再确认',
+      };
+    }
+    const previous = (JSON.parse(existing.value) as { fingerprint?: string }).fingerprint;
+    if (challenge?.trustedFingerprint !== previous)
+      return { success: false, message: '已信任的指纹在确认期间发生了变化，请重新测试连接' };
+    await prisma.config.update({
+      where: { key: `ssh-host:${deviceId}` },
+      data: { value: JSON.stringify({ host: device.host, port: device.port, fingerprint }) },
+    });
+    this.pendingHostKeys.delete(deviceId);
+    await logger.warning('设备安全', `设备 ${device.name} 的 SSH 主机指纹已由管理员替换`, {
+      deviceId,
+      previous,
+      current: fingerprint,
+    });
+    return { success: true, message: '已替换为新的主机指纹，请重新测试连接' };
+  }
+
   private observeHostKey(
     deviceId: string | undefined,
     config: SSHConfig,
     trustedFingerprint: string | undefined,
-    fingerprint: string
+    fingerprint: string,
+    algorithm?: string
   ) {
     const hostKey = {
       fingerprint,
+      ...(algorithm ? { algorithm } : {}),
       host: config.host,
       port: config.port,
       changed: Boolean(trustedFingerprint && trustedFingerprint !== fingerprint),
+      ...(trustedFingerprint && trustedFingerprint !== fingerprint ? { trustedFingerprint } : {}),
     };
     if (deviceId && trustedFingerprint !== fingerprint) {
       this.pendingHostKeys.set(deviceId, { ...hostKey, expiresAt: Date.now() + 5 * 60 * 1000 });
@@ -204,14 +244,22 @@ export class SSHManager extends EventEmitter {
           clearTimeout(timeout);
           resolve({
             success: false,
-            message: `连接失败: ${err.message}`,
+            message: isHostKeyRejection(err)
+              ? describeHostKeyRejection(hostKey)
+              : `连接失败: ${err.message}`,
             error: err,
             hostKey,
           });
         })
         .connect(
-          this.buildConnectConfig(config, trustedFingerprint, (fingerprint) => {
-            const observed = this.observeHostKey(deviceId, config, trustedFingerprint, fingerprint);
+          this.buildConnectConfig(config, trustedFingerprint, (fingerprint, algorithm) => {
+            const observed = this.observeHostKey(
+              deviceId,
+              config,
+              trustedFingerprint,
+              fingerprint,
+              algorithm
+            );
             hostKey = trustedFingerprint !== fingerprint ? observed : undefined;
           })
         );
@@ -286,7 +334,9 @@ export class SSHManager extends EventEmitter {
 
             resolve({
               success: false,
-              message: `连接失败: ${err.message}`,
+              message: isHostKeyRejection(err)
+                ? describeHostKeyRejection(hostKey)
+                : `连接失败: ${err.message}`,
               error: err,
               hostKey,
             });
@@ -316,8 +366,14 @@ export class SSHManager extends EventEmitter {
           }
         })
         .connect(
-          this.buildConnectConfig(config, trustedFingerprint, (fingerprint) => {
-            const observed = this.observeHostKey(deviceId, config, trustedFingerprint, fingerprint);
+          this.buildConnectConfig(config, trustedFingerprint, (fingerprint, algorithm) => {
+            const observed = this.observeHostKey(
+              deviceId,
+              config,
+              trustedFingerprint,
+              fingerprint,
+              algorithm
+            );
             hostKey = trustedFingerprint !== fingerprint ? observed : undefined;
           })
         );
@@ -1146,7 +1202,7 @@ export class SSHManager extends EventEmitter {
   private buildConnectConfig(
     config: SSHConfig,
     trustedFingerprint?: string,
-    onObserved?: (fingerprint: string) => void
+    onObserved?: (fingerprint: string, algorithm?: string) => void
   ): ConnectConfig {
     const connectConfig: ConnectConfig = {
       host: config.host,
