@@ -1,6 +1,5 @@
 import { EventEmitter } from 'events';
 import axios, { AxiosInstance, type AxiosRequestConfig, type CreateAxiosDefaults } from 'axios';
-import { HttpsProxyAgent } from 'https-proxy-agent';
 import http from 'node:http';
 import https from 'node:https';
 
@@ -13,7 +12,6 @@ import {
   hasReachedIPConsensus,
   isGlobalUnicastIPv4,
   recordIPChangeCandidate,
-  redactURLCredentials,
   selectConsensusIP,
 } from './ip-monitor-utils';
 
@@ -30,6 +28,8 @@ export interface IPMonitorConfig {
   confirmCount: number;
   sources: string[];
 }
+
+type IPResolver = (() => Promise<string>) & { invalidate?: () => void };
 
 const getErrorDetails = (error: unknown) => {
   if (axios.isAxiosError(error)) {
@@ -79,9 +79,11 @@ export class IPMonitor extends EventEmitter {
   private config: IPMonitorConfig;
   private axiosInstance: AxiosInstance;
   private sources: Map<string, IPCheckSource> = createIPCheckSources();
+  private ipResolver?: IPResolver;
 
-  constructor(config?: Partial<IPMonitorConfig>) {
+  constructor(config?: Partial<IPMonitorConfig>, ipResolver?: IPResolver) {
     super();
+    this.ipResolver = ipResolver;
 
     const nextConfig: IPMonitorConfig = {
       enabled: true,
@@ -97,6 +99,7 @@ export class IPMonitor extends EventEmitter {
     };
 
     const axiosConfig: CreateAxiosDefaults = {
+      proxy: false,
       timeout: 12000,
       headers: {
         'User-Agent':
@@ -120,20 +123,24 @@ export class IPMonitor extends EventEmitter {
       }),
     };
 
-    const proxy = process.env.HTTPS_PROXY || process.env.HTTP_PROXY;
-    if (proxy) {
-      const redactedProxy = redactURLCredentials(proxy);
-      try {
-        axiosConfig.httpsAgent = new HttpsProxyAgent(proxy);
-        logger.info('IP监控', `检测到代理配置，使用代理: ${redactedProxy}`).catch(() => {});
-      } catch {
-        logger
-          .warning('IP监控', `代理配置解析失败 (${redactedProxy})，继续使用直连`)
-          .catch(() => {});
-      }
-    }
-
     this.axiosInstance = axios.create(axiosConfig);
+  }
+
+  setIPResolver(resolver: IPResolver): void {
+    this.ipResolver = resolver;
+    this.invalidateObservation();
+  }
+
+  invalidateObservation(): void {
+    this.ipResolver?.invalidate?.();
+    this.observationGeneration += 1;
+    this.checkTask = null;
+    this.currentIP = '';
+    this.previousIP = '';
+    this.lastSampleIP = '';
+    this.lastSuccessfulCheck = null;
+    this.lastConfirmedCheck = null;
+    this.changeConfirmations.clear();
   }
 
   async start(): Promise<void> {
@@ -164,7 +171,8 @@ export class IPMonitor extends EventEmitter {
     }
 
     this.isRunning = false;
-    this.observationGeneration += 1;
+    if (this.ipResolver) this.invalidateObservation();
+    else this.observationGeneration += 1;
     this.changeConfirmations.clear();
     this.emit('stopped');
   }
@@ -205,7 +213,10 @@ export class IPMonitor extends EventEmitter {
 
       return this.currentIP;
     } catch (error) {
-      if (generation === this.observationGeneration) this.emit('error', error);
+      if (generation === this.observationGeneration) {
+        if (this.ipResolver) this.invalidateObservation();
+        this.emit('error', error);
+      }
       throw error;
     }
   }
@@ -243,6 +254,13 @@ export class IPMonitor extends EventEmitter {
   }
 
   async fetchCurrentIP(): Promise<string> {
+    if (this.ipResolver) {
+      const generation = this.observationGeneration;
+      const ip = await this.ipResolver();
+      if (generation !== this.observationGeneration) throw new Error('监控设备或读取状态已变化');
+      if (!isGlobalUnicastIPv4(ip)) throw new Error('设备返回的WAN公网IPv4地址无效');
+      return ip;
+    }
     const activeSources = this.config.sources
       .map((name) => this.sources.get(name))
       .filter((source): source is IPCheckSource => source !== undefined);
@@ -396,13 +414,7 @@ export class IPMonitor extends EventEmitter {
     if (config.sources !== undefined) {
       nextConfig.sources = normalizeIPCheckSources(config.sources);
       if (nextConfig.sources.join('|') !== this.config.sources.join('|')) {
-        this.observationGeneration += 1;
-        this.currentIP = '';
-        this.previousIP = '';
-        this.lastSampleIP = '';
-        this.lastSuccessfulCheck = null;
-        this.lastConfirmedCheck = null;
-        this.changeConfirmations.clear();
+        this.invalidateObservation();
       }
     }
     this.config = nextConfig;

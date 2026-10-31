@@ -1,8 +1,6 @@
 import React from 'react';
-import { Card, Checkbox, Form, InputNumber, Switch } from 'antd';
+import { Alert, Card, Form, InputNumber, Switch } from 'antd';
 import type { TFunction } from 'i18next';
-
-import { AUTOMATION_CHECK_SOURCE_OPTIONS } from '@/utils/automationConfig';
 
 interface AutomationMonitorSectionProps {
   t: TFunction;
@@ -56,28 +54,13 @@ const AutomationMonitorSection: React.FC<AutomationMonitorSectionProps> = ({ t }
         </Form.Item>
       </div>
 
-      <Form.Item
-        label={t('automation.checkSources')}
-        name="checkSources"
-        required={monitorEnabled}
-        rules={
-          monitorEnabled
-            ? [
-                {
-                  validator: async (_rule, value: string[] | undefined) => {
-                    if (Array.isArray(value) && value.length > 0) {
-                      return;
-                    }
-
-                    throw new Error(t('automation.selectCheckSources'));
-                  },
-                },
-              ]
-            : []
-        }
-        extra={t('automation.checkSourcesHint')}
-      >
-        <Checkbox.Group options={AUTOMATION_CHECK_SOURCE_OPTIONS} disabled={!monitorEnabled} />
+      <Form.Item label={t('automation.checkSources')}>
+        <Alert
+          type="info"
+          showIcon
+          message={t('automation.firewallWANSource')}
+          description={t('automation.firewallWANSourceHint')}
+        />
       </Form.Item>
     </Card>
   );

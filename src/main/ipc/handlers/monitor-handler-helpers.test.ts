@@ -35,7 +35,7 @@ test('fetches a fresh IP when the monitor is stopped to avoid stale cached value
   assert.equal(fetchCalled, true);
 });
 
-test('returns the fallback IP when fetching the current IP fails', async () => {
+test('clears the current IP instead of displaying an invalid address when fetching fails', async () => {
   const currentIP = await resolveCurrentMonitorIP({
     isMonitoring: false,
     currentIP: '',
@@ -44,5 +44,5 @@ test('returns the fallback IP when fetching the current IP fails', async () => {
     },
   });
 
-  assert.equal(currentIP, '0.0.0.0');
+  assert.equal(currentIP, '');
 });

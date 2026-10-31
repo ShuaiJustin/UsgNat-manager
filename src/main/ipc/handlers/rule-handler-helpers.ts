@@ -1,10 +1,13 @@
 import { createHash } from 'node:crypto';
 import type { PrismaClient } from '@prisma/client';
-import type { ParsedNatRule } from '../../services/usg-parser';
+import {
+  hasDeviceRuleName,
+  resolveDeviceRuleSyntax,
+  findMatchingDeviceRule,
+  type ParsedNatRule,
+} from '../../services/usg-parser.ts';
 
-const isEndpointRule = (rule: ParsedNatRule) =>
-  rule.addSyntax === 'endpoint' ||
-  (!rule.addSyntax && /^NAT_(?:\d{1,3}\.){3}\d{1,3}_\S+$/.test(rule.ruleName));
+const isEndpointRule = (rule: ParsedNatRule) => !hasDeviceRuleName(rule);
 const endpointKey = (rule: {
   protocol: string;
   globalIp: string;
@@ -53,7 +56,7 @@ export const replaceDeviceRuleSnapshot = async (
     });
     const saved = [];
     for (const [index, rule] of rules.entries()) {
-      const { addSyntax: _addSyntax, ...values } = rule;
+      const values = rule;
       const data = {
         ...values,
         noReverse: values.noReverse ?? false,
@@ -89,7 +92,8 @@ const canonicalRules = (rules: ParsedNatRule[]) =>
     .map((rule) => JSON.stringify(rule))
     .sort();
 export const equalDeviceRules = (left: ParsedNatRule[], right: ParsedNatRule[]) =>
-  JSON.stringify(canonicalRules(left)) === JSON.stringify(canonicalRules(right));
+  JSON.stringify(canonicalRules(resolveDeviceRuleSyntax(right, left))) ===
+  JSON.stringify(canonicalRules(resolveDeviceRuleSyntax(left, right)));
 const describeRule = (rule: ParsedNatRule) =>
   `${rule.ruleName}: ${rule.protocol} ${rule.globalIp}:${rule.globalPort} → ${rule.insideIp}:${rule.insidePort}${rule.noReverse ? ' no-reverse' : ''}${rule.unrRoute ? ' unr-route' : ''}`;
 
@@ -100,26 +104,19 @@ export const getBatchIPTarget = (
 ): ParsedNatRule[] => {
   const result = [...before];
   for (const rule of selected.filter((item) => item.enabled)) {
-    const endpointIndex = result.findIndex(
-      (candidate) =>
-        candidate.protocol.toUpperCase() === rule.protocol.toUpperCase() &&
-        candidate.globalIp === rule.globalIp &&
-        candidate.globalPort === rule.globalPort &&
-        candidate.insideIp === rule.insideIp &&
-        candidate.insidePort === rule.insidePort
-    );
-    const index =
-      endpointIndex >= 0
-        ? endpointIndex
-        : result.findIndex((candidate) => candidate.ruleName === rule.ruleName);
-    const onDevice = index >= 0 ? result[index] : undefined;
+    const onDevice = findMatchingDeviceRule(result, rule);
+    const index = onDevice ? result.indexOf(onDevice) : -1;
     if (index >= 0) result.splice(index, 1);
     // Mirrors generateBatchUpdateIPCommands: options are kept as the device has them.
     result.push({
       ...rule,
       globalIp: newIP,
       ...(onDevice
-        ? { noReverse: Boolean(onDevice.noReverse), unrRoute: Boolean(onDevice.unrRoute) }
+        ? {
+            addSyntax: onDevice.addSyntax || rule.addSyntax,
+            noReverse: Boolean(onDevice.noReverse),
+            unrRoute: Boolean(onDevice.unrRoute),
+          }
         : {}),
     });
   }
@@ -131,6 +128,7 @@ export const getRuleSyncPreview = (
   deviceRules: ParsedNatRule[],
   localRules: ParsedNatRule[]
 ) => {
+  localRules = resolveDeviceRuleSyntax(deviceRules, localRules);
   const device = new Map(deviceRules.map((rule) => [syncRuleKey(rule), rule]));
   const local = new Map(
     localRules.filter((rule) => rule.enabled).map((rule) => [syncRuleKey(rule), rule])
@@ -320,6 +318,7 @@ export const compareLocalWithDevice = <T extends ParsedNatRule & { id: string }>
   deviceRules: ParsedNatRule[],
   localRules: T[]
 ): { states: Record<string, RuleSyncState>; deviceOnly: ParsedNatRule[] } => {
+  localRules = resolveDeviceRuleSyntax(deviceRules, localRules);
   const device = new Map(deviceRules.map((rule) => [syncRuleKey(rule), rule]));
   const matched = new Set<string>();
   const states: Record<string, RuleSyncState> = {};

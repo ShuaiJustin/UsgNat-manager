@@ -33,6 +33,9 @@ const Settings: React.FC = () => {
   const { message, modal } = App.useApp();
   const [form] = Form.useForm<SettingsFormValues>();
   const [loading, setLoading] = useState(false);
+  const [initialLoading, setInitialLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [loadAttempt, setLoadAttempt] = useState(0);
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
   const [formValues, setFormValues] = useState<SettingsFormValues>(DEFAULT_SETTINGS_FORM_VALUES);
   const [resetValues, setResetValues] = useState<SettingsFormValues>(DEFAULT_SETTINGS_FORM_VALUES);
@@ -62,7 +65,10 @@ const Settings: React.FC = () => {
     const loadData = async () => {
       const api = window.electronAPI;
 
+      setInitialLoading(true);
+      setLoadError(null);
       try {
+        if (!api?.config?.get || !api?.system?.getAutoStart) throw new Error('设置读取接口不可用');
         const [appConfig, autoStart] = await Promise.all([
           api?.config?.get ? api.config.get<SettingsAppConfig>('app') : Promise.resolve(null),
           api?.system?.getAutoStart
@@ -76,10 +82,10 @@ const Settings: React.FC = () => {
         setFormValues(nextValues);
         setResetValues(nextValues);
         setHasUnsavedChanges(false);
-      } catch {
-        form.setFieldsValue(DEFAULT_SETTINGS_FORM_VALUES);
-        setFormValues(DEFAULT_SETTINGS_FORM_VALUES);
-        setResetValues(DEFAULT_SETTINGS_FORM_VALUES);
+      } catch (error) {
+        setLoadError(getErrorMessage(error, '设置读取失败'));
+      } finally {
+        setInitialLoading(false);
       }
 
       try {
@@ -105,7 +111,7 @@ const Settings: React.FC = () => {
     };
 
     void loadData();
-  }, [form]);
+  }, [form, loadAttempt]);
 
   const handleReset = () => {
     form.setFieldsValue(resetValues);
@@ -114,6 +120,7 @@ const Settings: React.FC = () => {
   };
 
   const handleSave = async () => {
+    if (initialLoading || loadError) return;
     try {
       setLoading(true);
       const values = await form.validateFields();
@@ -619,6 +626,16 @@ const Settings: React.FC = () => {
           monitorRunning={monitorRunning}
         />
 
+        {loadError && (
+          <Alert
+            type="error"
+            showIcon
+            message={loadError}
+            description="设置读取失败，已阻止保存，避免覆盖原有配置。"
+            action={<Button onClick={() => setLoadAttempt((value) => value + 1)}>重试</Button>}
+            style={{ marginBottom: 16 }}
+          />
+        )}
         <Tabs
           defaultActiveKey="1"
           size="large"
@@ -635,10 +652,18 @@ const Settings: React.FC = () => {
                 />
               )}
               <Space>
-                <Button onClick={handleReset} disabled={loading}>
+                <Button
+                  onClick={handleReset}
+                  disabled={loading || initialLoading || Boolean(loadError)}
+                >
                   {t('common.reset')}
                 </Button>
-                <Button type="primary" onClick={() => void handleSave()} loading={loading}>
+                <Button
+                  type="primary"
+                  onClick={() => void handleSave()}
+                  loading={loading || initialLoading}
+                  disabled={Boolean(loadError)}
+                >
                   {t('settings.saveSettings')}
                 </Button>
               </Space>

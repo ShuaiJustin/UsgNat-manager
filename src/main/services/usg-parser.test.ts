@@ -241,15 +241,12 @@ test('unnamed DNS TCP and UDP on the same public port remain distinct endpoint r
       usgParser.generateDeleteNatServerCommand(rule),
       new RegExp('^undo nat server protocol ' + rule.protocol.toLowerCase() + ' global')
     );
-    assert.match(
-      usgParser.generateNatServerCommand({ ...rule, addSyntax: undefined }),
-      /^nat server protocol/
-    );
+    assert.match(usgParser.generateNatServerCommand(rule), /^nat server protocol/);
   }
   assert.deepEqual(
     usgParser.generateSyncToDeviceCommands(
       [rules[0]],
-      [{ ...rules[0], ruleName: 'NAT_1.2.3.4_53', addSyntax: undefined }]
+      [{ ...rules[0], ruleName: 'NAT_1.2.3.4_53' }]
     ),
     []
   );
@@ -403,7 +400,7 @@ test('batch IP update adds selected rules when no current device rules are provi
   );
 });
 
-test('batch IP update deletes by the matching device rule name when local and device names differ', () => {
+test('batch IP update never deletes another named rule merely because endpoints match', () => {
   const commands = usgParser.generateBatchUpdateIPCommands(
     [
       {
@@ -433,10 +430,11 @@ test('batch IP update deletes by the matching device rule name when local and de
     ]
   );
 
-  assert.equal(commands[1], 'undo nat server name device-web');
-  assert.equal(
-    commands[2],
-    'nat server name local-web protocol tcp global 116.232.123.242 18444 inside 192.168.1.164 18444'
+  assert.ok(!commands.some((command) => command.startsWith('undo nat server')));
+  assert.ok(
+    commands.includes(
+      'nat server local-web protocol tcp global 116.232.123.242 18444 inside 192.168.1.164 18444'
+    )
   );
 });
 
@@ -471,7 +469,7 @@ test('batch IP update matches device rules when local protocol casing differs', 
   const commands = usgParser.generateBatchUpdateIPCommands(
     [
       {
-        ruleName: 'local-web',
+        ruleName: 'device-web',
         protocol: 'tcp' as 'TCP',
         globalIp: '180.158.214.247',
         globalPort: '18444',
@@ -732,10 +730,7 @@ test('a disabled local rule sharing a key with an enabled synced one does not de
   };
   const commands = usgParser.generateSyncToDeviceCommands(
     [live],
-    [
-      { ...live, addSyntax: undefined },
-      { ...live, addSyntax: undefined, enabled: false, insideIp: '192.168.1.99' },
-    ]
+    [{ ...live }, { ...live, enabled: false, insideIp: '192.168.1.99' }]
   );
   assert.deepEqual(commands, []);
 });

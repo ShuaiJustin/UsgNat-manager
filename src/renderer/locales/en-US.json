@@ -36,7 +36,8 @@
     "online": "Online",
     "monitoring": "Monitoring",
     "running": "Running",
-    "stopped": "Stopped"
+    "stopped": "Stopped",
+    "unavailable": "Unavailable"
   },
   "dashboard": {
     "title": "Dashboard",
@@ -106,7 +107,8 @@
     "syncSuccess": "Sync Successful",
     "syncFailed": "Sync Failed",
     "noReverse": "No Reverse Mapping",
-    "description": "Description"
+    "description": "Description",
+    "readOverwriteWarning": "Reading replaces local rules with the device configuration and overwrites changes that have not been applied. Locally disabled rules are preserved."
   },
   "automation": {
     "title": "Automation Management",
@@ -119,6 +121,8 @@
     "confirmCount": "Confirmation Count",
     "confirmCountHint": "Confirm after the same IP is detected consecutively",
     "checkSources": "Check Sources",
+    "firewallWANSource": "Firewall public IPv4 interface (read via SSH)",
+    "firewallWANSourceHint": "Determine the WAN public IP from interface status and the unique installed default route on selected devices, or all enabled devices if none are selected. All selected devices must share one egress IP. Detection stops if the route or interface is ambiguous. The computer proxy or TUN exit IP is never used. Check logs, device credentials and SSH trust on connection failure.",
     "checkSourcesHint": "Choose the public IP lookup sources used for monitoring",
     "autoUpdate": "Auto Update Policy",
     "enableAutoUpdate": "Enable Auto Update",

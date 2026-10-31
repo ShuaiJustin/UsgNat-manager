@@ -6,8 +6,9 @@ import vm from 'node:vm';
 import ts from 'typescript';
 import { setImmediate } from 'node:timers';
 import * as helpers from './automation-service-helpers.ts';
-import { usgParser } from './usg-parser.ts';
+import { usgParser, parseStoredRuleSyntax } from './usg-parser.ts';
 import { MandatoryUpdateBusinessGate } from './mandatory-update-business-gate.ts';
+import { selectFirewallWANIP, FIREWALL_DEFAULT_ROUTE_COMMAND } from './firewall-public-ip.ts';
 
 // Execute the real service while isolating Electron, storage, network and notifications.
 /* eslint-disable @typescript-eslint/no-explicit-any -- Only this VM fixture reflects transpiled module exports and IPC/storage boundary payloads. */
@@ -27,6 +28,9 @@ function fixture(
     credentialMissing?: boolean;
     natReadFailure?: { at: number; error: string };
     wanIP?: string;
+    wanReader?: boolean;
+    ruleName?: string;
+    addSyntax?: 'direct-name' | 'name-keyword' | 'endpoint';
   } = {}
 ) {
   const ip = '2.2.2.2';
@@ -34,7 +38,8 @@ function fixture(
   const rule = {
     id: 'managed',
     deviceId: options.ruleDeviceId ?? 'device',
-    ruleName: 'web',
+    ruleName: options.ruleName ?? 'web',
+    addSyntax: options.addSyntax,
     protocol: 'TCP',
     globalIp: '1.1.1.1',
     globalPort: '80',
@@ -79,6 +84,7 @@ function fixture(
       return this.currentIP;
     },
     updateConfig() {},
+    invalidateObservation() {},
   });
   const mutations: string[][] = [];
   const databaseWrites: any[] = [];
@@ -95,9 +101,16 @@ function fixture(
   };
   const devices = options.extraDevice ? [device, { ...device, id: 'extra-device' }] : [device];
   let ruleReads = 0;
+  const deviceLocks = new Set<string>();
   const ssh = {
-    async withDeviceOperation(_id: string, action: () => Promise<any>) {
-      return action();
+    async withDeviceOperation(id: string, action: () => Promise<any>) {
+      if (deviceLocks.has(id)) throw new Error('设备任务正在进行');
+      deviceLocks.add(id);
+      try {
+        return await action();
+      } finally {
+        deviceLocks.delete(id);
+      }
     },
     async connect() {
       return { success: true };
@@ -108,6 +121,12 @@ function fixture(
     async disconnect() {},
     async executeCommand(_id: string, command: string) {
       reads.push(command);
+      if (command === FIREWALL_DEFAULT_ROUTE_COMMAND)
+        return {
+          success: true,
+          complete: true,
+          output: `Routing Table : Public\nSummary Count : 1\n0.0.0.0/0 Static 60 0 D 192.168.1.1 Dialer0`,
+        };
       if (command === 'display ip interface brief | include /')
         return {
           success: true,
@@ -152,6 +171,9 @@ GigabitEthernet0/0/1 192.168.1.1/24 up up`,
       return { success: true };
     },
   };
+  if (options.wanReader)
+    monitor.refreshConfirmedIP = () =>
+      ssh.withDeviceOperation('device', async () => options.wanIP ?? monitor.currentIP);
   const noOp = async () => {};
   const notifications: unknown[][] = [];
   let notifyHook: (() => Promise<void>) | null = null;
@@ -190,7 +212,8 @@ GigabitEthernet0/0/1 192.168.1.1/24 up up`,
     },
     './ip-monitor': { ipMonitor: monitor },
     './ssh-manager': { sshManager: ssh },
-    './usg-parser': { usgParser },
+    './usg-parser': { usgParser, parseStoredRuleSyntax },
+    './firewall-public-ip': { selectFirewallWANIP, FIREWALL_DEFAULT_ROUTE_COMMAND },
     './logger': {
       logger: {
         info: log('info'),
@@ -318,6 +341,7 @@ GigabitEthernet0/0/1 192.168.1.1/24 up up`,
   };
   const drain = () => new Promise<void>((resolve) => setImmediate(resolve));
   return {
+    rule,
     service,
     gate,
     monitor,
@@ -724,6 +748,28 @@ test('deleted managed names are not replaced by a different named device rule', 
   assert.equal(f.mutations.length, 0);
 });
 
+test('NAT-prefixed names and legacy unnamed identities cannot claim another named device rule', async () => {
+  for (const ruleName of ['NAT_WEB', 'NAT_1.1.1.1_80', 'NAT_1.1.1.1_80_TCP']) {
+    const f = fixture({ ruleName, addSyntax: 'direct-name' });
+    f.service.updateConfig(f.config);
+    f.setObserved('nat server unrelated protocol tcp global 1.1.1.1 80 inside 192.168.1.2 80');
+    const result = await f.service.manualUpdate('2.2.2.2');
+    assert.equal(result.success, false, ruleName);
+    assert.equal(f.mutations.length, 0, ruleName);
+  }
+});
+
+test('persisted unnamed managed identities still match an observed unnamed endpoint after IP changes', async () => {
+  for (const ruleName of ['NAT_1.1.1.1_80', 'NAT_1.1.1.1_80_TCP']) {
+    const f = fixture({ ruleName, addSyntax: 'endpoint' });
+    f.service.updateConfig(f.config);
+    f.setObserved('nat server protocol tcp global 2.2.2.2 80 inside 192.168.1.2 80');
+    const result = await f.service.manualUpdate('2.2.2.2');
+    assert.equal(result.success, true, ruleName);
+    assert.equal(f.mutations.length, 0, ruleName);
+  }
+});
+
 test('resume reads the current device state even when the public IP has not changed', async () => {
   const f = fixture({ alreadyCurrent: true });
   await f.service.start(f.config);
@@ -761,6 +807,35 @@ test('device changes during confirmation invalidate the plan before any mutating
   const result = await f.service.manualUpdate('2.2.2.2');
   assert.equal(result.success, false);
   assert.equal(f.mutations.length, 0);
+});
+
+test('confirmed detected-WAN updates recheck the interface inside the existing device lock', async () => {
+  const f = fixture({ wanReader: true });
+  f.service.updateConfig({ ...f.config, securityOptions: ['manualConfirm'] });
+  f.service.on('manual-confirm-request', (request: { callback: (confirmed: boolean) => void }) =>
+    request.callback(true)
+  );
+  const result = await f.service.manualUpdate();
+  assert.equal(result.success, true);
+  assert.equal(
+    f.reads.filter((command: string) => command === 'display ip interface brief | include /')
+      .length,
+    2
+  );
+  assert.equal(f.mutations.length, 1);
+});
+
+test('switching monitored devices invalidates the previous WAN observation immediately', () => {
+  const f = fixture();
+  f.service.updateConfig(f.config);
+  let invalidated = 0;
+  f.monitor.invalidateObservation = () => {
+    invalidated++;
+    f.monitor.currentIP = '';
+  };
+  f.service.updateConfig({ selectedDevices: ['other'] });
+  assert.equal(invalidated, 1);
+  assert.equal(f.monitor.currentIP, '');
 });
 
 test('a mixed valid and invalid saved scope fails closed rather than silently updating a subset', async () => {
@@ -1022,4 +1097,16 @@ test('a persistent interface mismatch stops retries with the cause in the alert'
   assert.equal(f.service.getStatus().needsAttention, true);
   assert.ok(f.logs.some((log) => log.level === 'error' && /不在设备/.test(log.message)));
   await f.service.stop();
+});
+
+test('named synthetic-looking identities and ambiguous legacy rows never claim an unrelated anonymous endpoint', async () => {
+  for (const syntax of ['direct-name', 'name-keyword', undefined] as const) {
+    const f = fixture({ ruleName: 'NAT_1.1.1.1_80', addSyntax: syntax || 'direct-name' });
+    if (!syntax) delete f.rule.addSyntax;
+    f.service.updateConfig(f.config);
+    f.setObserved('nat server protocol tcp global 1.1.1.1 80 inside 192.168.1.2 80');
+    const result = await f.service.manualUpdate('2.2.2.2');
+    assert.equal(result.success, false);
+    assert.equal(f.mutations.length, 0);
+  }
 });

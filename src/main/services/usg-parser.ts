@@ -49,12 +49,40 @@ const HUAWEI_TIMESTAMP_HEADER =
 // read, since rewriting such a rule would silently drop the option.
 const SUPPORTED_NAT_OPTIONS = new Set(['no-reverse', 'unr-route']);
 
-export const hasDeviceRuleName = (rule: ParsedNatRule): boolean =>
-  Boolean(rule.ruleName) &&
-  rule.addSyntax !== 'endpoint' &&
-  (rule.addSyntax === 'direct-name' ||
-    rule.addSyntax === 'name-keyword' ||
-    !/^NAT_(?:\d{1,3}\.){3}\d{1,3}_\S+$/.test(rule.ruleName));
+export const parseStoredRuleSyntax = (value: unknown): ParsedNatRule['addSyntax'] => {
+  if (value == null) return undefined;
+  if (value === 'direct-name' || value === 'name-keyword' || value === 'endpoint') return value;
+  throw new Error('规则语法身份无效，请重新从设备读取规则');
+};
+
+export const hasDeviceRuleName = (rule: ParsedNatRule): boolean => {
+  parseStoredRuleSyntax(rule.addSyntax);
+  if (!rule.addSyntax && /^NAT_(?:\d{1,3}\.){3}\d{1,3}_\S+$/.test(rule.ruleName))
+    throw new Error(`规则 ${rule.ruleName} 的历史身份不明确，请重新从设备读取规则后再下发`);
+  return (
+    Boolean(rule.ruleName) &&
+    rule.addSyntax !== 'endpoint' &&
+    (rule.addSyntax === 'direct-name' ||
+      rule.addSyntax === 'name-keyword' ||
+      !/^NAT_(?:\d{1,3}\.){3}\d{1,3}_\S+$/.test(rule.ruleName))
+  );
+};
+
+// Preserve persisted identities; older unambiguous named rules can recover CLI spelling
+// from a fresh device read. Ambiguous historical names must be explicitly re-read. O(local + device).
+export const resolveDeviceRuleSyntax = <T extends ParsedNatRule>(
+  deviceRules: ParsedNatRule[],
+  localRules: T[]
+): T[] => {
+  const byName = new Map(deviceRules.map((rule) => [rule.ruleName, rule]));
+  return localRules.map((rule) => {
+    hasDeviceRuleName(rule); // Unknown legacy synthetic-like identities require an explicit device read.
+    const observed = byName.get(rule.ruleName);
+    return !rule.addSyntax && observed?.addSyntax
+      ? { ...rule, addSyntax: observed.addSyntax }
+      : rule;
+  });
+};
 
 const hasSameNatEndpoint = (left: ParsedNatRule, right: ParsedNatRule): boolean =>
   left.protocol.toUpperCase() === right.protocol.toUpperCase() &&
@@ -63,12 +91,17 @@ const hasSameNatEndpoint = (left: ParsedNatRule, right: ParsedNatRule): boolean 
   left.insideIp === right.insideIp &&
   left.insidePort === right.insidePort;
 
-const findMatchingDeviceRule = (
+export const findMatchingDeviceRule = (
   deviceRules: ParsedNatRule[],
   rule: ParsedNatRule
 ): ParsedNatRule | undefined =>
-  deviceRules.find((candidate) => hasSameNatEndpoint(candidate, rule)) ||
-  deviceRules.find((candidate) => candidate.ruleName === rule.ruleName);
+  hasDeviceRuleName(rule)
+    ? deviceRules.find(
+        (candidate) => hasDeviceRuleName(candidate) && candidate.ruleName === rule.ruleName
+      )
+    : deviceRules.find(
+        (candidate) => !hasDeviceRuleName(candidate) && hasSameNatEndpoint(candidate, rule)
+      );
 
 const endpointsOverlap = (left: ParsedNatRule, right: ParsedNatRule): boolean =>
   left.globalIp === right.globalIp &&
@@ -297,6 +330,7 @@ export class USGParser {
     deviceRules: ParsedNatRule[],
     localRules: ParsedNatRule[]
   ): string[] {
+    localRules = resolveDeviceRuleSyntax(deviceRules, localRules);
     const deletes: string[] = [];
     const adds: string[] = [];
     const deviceRuleMap = new Map<string, ParsedNatRule>();
@@ -333,6 +367,7 @@ export class USGParser {
       }
 
       const hasChanged =
+        hasDeviceRuleName(deviceRule) !== hasDeviceRuleName(localRule) ||
         deviceRule.protocol.toUpperCase() !== localRule.protocol.toUpperCase() ||
         deviceRule.globalIp !== localRule.globalIp ||
         deviceRule.globalPort !== localRule.globalPort ||
@@ -350,7 +385,7 @@ export class USGParser {
           adds.push(
             this.generateNatServerCommand({
               ...localRule,
-              addSyntax: deviceRule.addSyntax || localRule.addSyntax,
+              addSyntax: localRule.addSyntax || deviceRule.addSyntax,
             })
           );
         }

@@ -6,7 +6,7 @@ import fs from 'fs/promises';
 import path from 'path';
 import { ipMonitor, IPChangeEvent, type IPMonitorConfig } from './ip-monitor';
 import { sshManager, type SSHConfig } from './ssh-manager';
-import { usgParser, type ParsedNatRule } from './usg-parser';
+import { usgParser, parseStoredRuleSyntax, type ParsedNatRule } from './usg-parser';
 import { deviceRuleSnapshots } from './device-rule-snapshots';
 import { logger } from './logger';
 import { notifier } from './notifier';
@@ -29,6 +29,7 @@ import {
 } from './automation-service-helpers';
 import { mandatoryUpdateBusinessGate } from './mandatory-update-business-gate';
 import { DEFAULT_IP_CHECK_SOURCES } from '../ip-check-sources';
+import { selectFirewallWANIP, FIREWALL_DEFAULT_ROUTE_COMMAND } from './firewall-public-ip';
 
 /**
  * 自动化配置
@@ -883,9 +884,11 @@ class AutomationService extends EventEmitter {
     }
 
     // 获取需要更新的规则
-    const rules = await prisma.natRule.findMany({
-      where: { deviceId, id: { in: expectedRuleIds }, enabled: true },
-    });
+    const rules = (
+      await prisma.natRule.findMany({
+        where: { deviceId, id: { in: expectedRuleIds }, enabled: true },
+      })
+    ).map((rule) => ({ ...rule, addSyntax: parseStoredRuleSyntax(rule.addSyntax) }));
     const initialIds = new Set(rules.map((rule) => rule.id));
     const missingInitialIds = expectedRuleIds.filter((id) => !initialIds.has(id));
     if (!expectedRuleIds.length || missingInitialIds.length)
@@ -935,22 +938,27 @@ class AutomationService extends EventEmitter {
       );
       const byName = new Map(observed.map((rule) => [rule.ruleName, rule]));
       const byEndpoint = new Map(
-        observed.map((rule) => [
-          `${rule.protocol}:${rule.globalPort}:${rule.insideIp}:${rule.insidePort}`,
-          rule,
-        ])
+        observed
+          .filter((rule) => rule.addSyntax === 'endpoint')
+          .map((rule) => [
+            `${rule.protocol}:${rule.globalPort}:${rule.insideIp}:${rule.insidePort}`,
+            rule,
+          ])
       );
       // O(local rules + observed rules); explicit managed scope never creates missing device rules.
       oldRules = rules.map((rule) => {
         const actual =
           byName.get(rule.ruleName) ||
-          (rule.ruleName.startsWith('NAT_')
+          (rule.addSyntax === 'endpoint'
             ? byEndpoint.get(
                 `${rule.protocol}:${rule.globalPort}:${rule.insideIp}:${rule.insidePort}`
               )
             : undefined);
         if (
           !actual ||
+          (rule.addSyntax &&
+            (rule.addSyntax === 'endpoint') !== (actual.addSyntax === 'endpoint')) ||
+          (!rule.addSyntax && /^NAT_(?:\d{1,3}\.){3}\d{1,3}_\S+$/.test(rule.ruleName)) ||
           actual.protocol !== rule.protocol ||
           actual.globalPort !== rule.globalPort ||
           actual.insideIp !== rule.insideIp ||
@@ -1015,7 +1023,15 @@ class AutomationService extends EventEmitter {
           return { success: false, cancelled: true, error: reason };
         }
         if (detectedIP) {
-          const latest = await ipMonitor.refreshConfirmedIP();
+          // This operation already owns the device lock. Reuse this SSH connection rather
+          // than starting the global resolver, which would try to acquire the same lock.
+          const interfaces = await sshManager.executeCommand(deviceId, INTERFACE_ADDRESS_COMMAND);
+          if (!interfaces.success || interfaces.complete !== true)
+            throw new Error('确认后设备WAN地址读取失败或不完整，已阻止写入');
+          const routing = await sshManager.executeCommand(deviceId, FIREWALL_DEFAULT_ROUTE_COMMAND);
+          if (!routing.success || routing.complete !== true)
+            throw new Error('确认后读取默认路由失败，已阻止写入');
+          const latest = selectFirewallWANIP(interfaces.output || '', routing.output);
           if (latest !== newIP) {
             this.pendingIP = latest;
             this.emit('update-cancelled', { reason: '确认期间公网IP已变化，需要重新确认' });
@@ -1273,6 +1289,8 @@ class AutomationService extends EventEmitter {
   updateConfig(config: Partial<AutomationConfig>) {
     const oldConfig = { ...this.config };
     this.config = { ...this.config, ...config };
+    if (JSON.stringify(oldConfig.selectedDevices) !== JSON.stringify(this.config.selectedDevices))
+      ipMonitor.invalidateObservation();
     if (config.windowsNotifyEnabled !== undefined || config.notifyTypes !== undefined) {
       notifier.updateConfig({
         windowsNotifyEnabled: this.config.windowsNotifyEnabled !== false,

@@ -543,15 +543,17 @@ export const buildLatestVersionApiUrl = (serverUrl: string): string => {
 };
 
 // Bounded redirects and a 1 MiB body limit keep manifest requests small.
-export const fetchUpdateManifest = (
+export const fetchUpdateManifest = async (
   url: string,
   userAgent: string,
-  redirectCount = 0
-): Promise<string> =>
-  new Promise((resolve, reject) => {
+  redirectCount = 0,
+  resolveAgent?: (url: string) => Promise<http.Agent | undefined>
+): Promise<string> => {
+  const agent = await resolveAgent?.(url);
+  return new Promise((resolve, reject) => {
     const parsedUrl = new URL(url);
     const client = parsedUrl.protocol === 'https:' ? https : http;
-    const req = client.get(parsedUrl, { headers: { 'User-Agent': userAgent } }, (res) => {
+    const req = client.get(parsedUrl, { agent, headers: { 'User-Agent': userAgent } }, (res) => {
       if ([301, 302, 303, 307, 308].includes(res.statusCode ?? 0)) {
         res.once('error', reject);
         res.resume();
@@ -560,7 +562,7 @@ export const fetchUpdateManifest = (
           if (redirectCount >= 5) throw new Error('重定向次数超过限制');
           const target = new URL(res.headers.location, parsedUrl).href;
           assertSafeUpdateRedirect(url, target);
-          resolve(fetchUpdateManifest(target, userAgent, redirectCount + 1));
+          resolve(fetchUpdateManifest(target, userAgent, redirectCount + 1, resolveAgent));
         } catch (error) {
           reject(error);
         }
@@ -577,6 +579,7 @@ export const fetchUpdateManifest = (
     req.once('error', reject);
     req.setTimeout(10000, () => req.destroy(new Error('请求超时')));
   });
+};
 
 export const resolveUpdateAssetUrl = (assetUrl: string, serverUrl: string): string => {
   if (assetUrl.startsWith('http://') || assetUrl.startsWith('https://')) {

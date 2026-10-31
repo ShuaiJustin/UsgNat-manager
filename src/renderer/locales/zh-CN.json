@@ -36,7 +36,8 @@
     "online": "在线",
     "monitoring": "监控",
     "running": "运行中",
-    "stopped": "已停止"
+    "stopped": "已停止",
+    "unavailable": "无法获取"
   },
   "dashboard": {
     "title": "仪表板",
@@ -106,7 +107,8 @@
     "syncSuccess": "同步成功",
     "syncFailed": "同步失败",
     "noReverse": "不生成反向映射",
-    "description": "描述"
+    "description": "描述",
+    "readOverwriteWarning": "本地列表会更新为设备上的规则，尚未下发的修改会被覆盖；本地已禁用的规则会保留。"
   },
   "automation": {
     "title": "自动化管理",
@@ -119,6 +121,8 @@
     "confirmCount": "变更确认次数",
     "confirmCountHint": "连续检测到相同 IP 后确认变更",
     "checkSources": "检测源",
+    "firewallWANSource": "防火墙公网 IPv4 接口（SSH 读取）",
+    "firewallWANSourceHint": "通过所选设备的接口状态和唯一生效默认路由确定 WAN 公网 IP；未选择时读取已启用设备。多个设备的出口 IP 必须一致，路由或接口无法唯一确定出口时停止检测。不会使用电脑的代理或 TUN 出口 IP；连接失败时请查看日志并检查设备凭据和 SSH 信任。",
     "checkSourcesHint": "选择用于监控公网 IP 的检测源，建议保持默认值",
     "autoUpdate": "自动更新策略",
     "enableAutoUpdate": "启用自动更新",

@@ -42,6 +42,7 @@ type FieldType =
   | 'boolean'
   // Added after older backups were written; missing means false.
   | 'optionalBoolean'
+  | 'optionalRuleSyntax'
   | 'port'
   | 'date'
   | 'nullableDate';
@@ -72,6 +73,7 @@ const schemas: Record<keyof BackupData, Record<string, FieldType>> = {
     description: 'nullableString',
     noReverse: 'boolean',
     unrRoute: 'optionalBoolean',
+    addSyntax: 'optionalRuleSyntax',
     ...dates,
   },
   logs: {
@@ -121,6 +123,12 @@ export function validateBackupPayload(payload: unknown): {
         const value = row[field];
         if (type === 'optionalBoolean' && value === undefined) {
           normalized[field] = false;
+          continue;
+        }
+        if (type === 'optionalRuleSyntax') {
+          if (value != null && !['direct-name', 'name-keyword', 'endpoint'].includes(String(value)))
+            throw new Error('备份规则语法身份无效');
+          normalized[field] = value ?? null;
           continue;
         }
         const nullable = type.startsWith('nullable');

@@ -9,7 +9,7 @@ export const resolveCurrentMonitorIP = async ({
   isMonitoring,
   currentIP,
   fetchCurrentIP,
-  fallbackIP = '0.0.0.0',
+  fallbackIP = '',
 }: ResolveCurrentMonitorIPOptions): Promise<string> => {
   if (isMonitoring && currentIP) {
     return currentIP;

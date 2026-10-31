@@ -15,7 +15,15 @@ import { emailService } from './services/email-service';
 import { ipMonitor, type IPMonitorConfig } from './services/ip-monitor';
 import { logger } from './services/logger';
 import { notifier } from './services/notifier';
-import { disconnectPrisma } from './services/prisma-client';
+import { disconnectPrisma, prisma } from './services/prisma-client';
+import { credentialManager } from './services/credential-manager';
+import { sshManager } from './services/ssh-manager';
+import { assertSupportedDeviceAccess } from './ipc/handlers/shared';
+import {
+  createFirewallPublicIPReader,
+  FIREWALL_INTERFACE_ADDRESS_COMMAND,
+  FIREWALL_DEFAULT_ROUTE_COMMAND,
+} from './services/firewall-public-ip';
 import { customUpdater } from './services/custom-updater';
 import { restoreAutomationUnlessMandatory } from './services/custom-updater-helpers';
 import { mandatoryUpdateBusinessGate } from './services/mandatory-update-business-gate';
@@ -47,6 +55,51 @@ const getErrorMessage = (error: unknown, fallback: string): string =>
 const userDataPath = app.getPath('userData');
 const dbPath = path.join(userDataPath, 'usg-nat.db');
 process.env.DATABASE_URL = `file:${dbPath}`;
+
+// NAT management observes the firewall's WAN, independently of this computer's VPN/TUN route.
+ipMonitor.setIPResolver(
+  createFirewallPublicIPReader({
+    getDevices: () => prisma.device.findMany({ select: { id: true, name: true, enabled: true } }),
+    getSelectedDeviceIds: async () => automationService.getConfig().selectedDevices,
+    enter: () => mandatoryUpdateBusinessGate.tryEnter(),
+    readInterfaces: (id) =>
+      sshManager.withDeviceOperation(id, async () => {
+        const device = await prisma.device.findUnique({ where: { id } });
+        if (!device?.enabled) throw new Error('监控设备不存在或已禁用');
+        try {
+          const credential = await credentialManager.getCredential(id);
+          if (!credential) throw new Error(`设备 ${device.name} 未配置凭据`);
+          assertSupportedDeviceAccess(device, credential);
+          if (!sshManager.isConnected(id)) {
+            const connected = await sshManager.connect(id, {
+              host: device.host,
+              port: device.port,
+              username: credential.username || 'admin',
+              password: credential.password,
+              privateKey: credential.privateKey,
+              passphrase: credential.passphrase,
+            });
+            if (!connected.success)
+              throw new Error(`设备 ${device.name} 连接失败: ${connected.message}`);
+          }
+          const interfaces = await sshManager.executeCommand(
+            id,
+            FIREWALL_INTERFACE_ADDRESS_COMMAND
+          );
+          if (!interfaces.success || interfaces.complete !== true) return interfaces;
+          const routing = await sshManager.executeCommand(id, FIREWALL_DEFAULT_ROUTE_COMMAND);
+          return {
+            ...interfaces,
+            routingOutput: routing.output,
+            success: routing.success,
+            complete: routing.complete,
+          };
+        } finally {
+          await sshManager.disconnect(id);
+        }
+      }),
+  })
+);
 
 let mainWindow: BrowserWindow | null = null;
 
@@ -92,6 +145,7 @@ const applyStoredConfigurationNow = async (
     const automationConfig: StoredAutomationConfig | null =
       runtimeOverride?.automationConfig ??
       (await configService.getConfig<StoredAutomationConfig>('automation'));
+    if (automationConfig) automationService.updateConfig(automationConfig);
     notifier.updateConfig({
       windowsNotifyEnabled: automationConfig?.windowsNotifyEnabled !== false,
       notifyTypes: automationConfig?.notifyTypes ?? ['ipChange', 'updateSuccess', 'updateFailed'],

@@ -12,9 +12,9 @@ const { Text } = Typography;
 
 const StatusBar: React.FC = () => {
   const { t } = useTranslation();
-  const { currentIP, isMonitoring, setCurrentIP } = useMonitorStore();
+  const { currentIP, isMonitoring, setCurrentIP, setMonitoring } = useMonitorStore();
 
-  const { data: ip } = useQuery({
+  const { data: ip, isPending: ipPending } = useQuery({
     queryKey: ['currentIP'],
     queryFn: async () => {
       const api = window.electronAPI;
@@ -25,7 +25,14 @@ const StatusBar: React.FC = () => {
     },
     refetchInterval: 60000,
     enabled: typeof window.electronAPI?.monitor?.getCurrentIP === 'function',
-    retry: 2,
+    retry: false,
+  });
+
+  const { data: status, isError: statusError } = useQuery({
+    queryKey: ['monitor', 'status'],
+    queryFn: () => window.electronAPI.monitor.getStatus(),
+    refetchInterval: 5000,
+    retry: false,
   });
 
   const { data: devices } = useQuery<Device[]>({
@@ -43,10 +50,9 @@ const StatusBar: React.FC = () => {
   });
 
   useEffect(() => {
-    if (ip) {
-      setCurrentIP(ip);
-    }
-  }, [ip, setCurrentIP]);
+    setMonitoring(!statusError && Boolean(status?.isRunning));
+    setCurrentIP(statusError ? '' : status?.isRunning ? status.currentIP || '' : ip || '');
+  }, [ip, status, statusError, setCurrentIP, setMonitoring]);
 
   const onlineDevices = devices?.filter((device) => device.online).length || 0;
   const totalDevices = devices?.length || 0;
@@ -68,7 +74,7 @@ const StatusBar: React.FC = () => {
         <Space>
           <CloudOutlined style={{ color: '#1890ff' }} />
           <Text strong>{t('statusBar.currentIP')}:</Text>
-          <Text>{currentIP || t('statusBar.fetching')}</Text>
+          <Text>{currentIP || t(ipPending ? 'statusBar.fetching' : 'statusBar.unavailable')}</Text>
         </Space>
 
         <Space>

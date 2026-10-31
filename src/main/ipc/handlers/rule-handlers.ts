@@ -13,6 +13,7 @@ import { mandatoryUpdateBusinessGate } from '../../services/mandatory-update-bus
 import {
   assertNoNatEndpointConflicts,
   usgParser,
+  parseStoredRuleSyntax,
   type ParsedNatRule,
 } from '../../services/usg-parser';
 import { deviceRuleSnapshots } from '../../services/device-rule-snapshots';
@@ -67,6 +68,7 @@ const assertRulePayload = (rule: RuleUpdatePayload) => {
 const toParsedRule = (rule: NatRule): ParsedNatRule => ({
   ...rule,
   protocol: rule.protocol as ParsedNatRule['protocol'],
+  addSyntax: parseStoredRuleSyntax(rule.addSyntax),
   description: rule.description ?? undefined,
 });
 const deviceIdentity = (device: Device) => JSON.stringify([device.id, device.host, device.port]);
@@ -388,6 +390,7 @@ export function registerRuleHandlers() {
       assertRulePayload(rule);
       const candidate = {
         ...rule,
+        addSyntax: 'direct-name' as const,
         noReverse: rule.noReverse ?? false,
         unrRoute: rule.unrRoute ?? false,
         description: rule.description ?? undefined,
@@ -398,6 +401,7 @@ export function registerRuleHandlers() {
       const saved = await prisma.natRule.create({
         data: {
           ...rule,
+          addSyntax: 'direct-name',
           noReverse: rule.noReverse ?? undefined,
           unrRoute: rule.unrRoute ?? undefined,
           deviceId,

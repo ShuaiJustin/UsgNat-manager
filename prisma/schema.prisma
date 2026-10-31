@@ -43,6 +43,7 @@ model NatRule {
   description  String?  // 描述
   noReverse    Boolean  @default(false) // 不生成反向Server-Map表项
   unrRoute     Boolean  @default(false) // 下发 UNR 路由（unr-route）
+  addSyntax    String?  // direct-name/name-keyword/endpoint; NULL means legacy identity is unknown
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 

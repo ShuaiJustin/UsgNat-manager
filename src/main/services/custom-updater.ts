@@ -1,4 +1,4 @@
-﻿import { BrowserWindow, app } from 'electron';
+import { BrowserWindow, app, session } from 'electron';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as https from 'https';
@@ -9,6 +9,7 @@ import { isDevMode } from '../runtime-mode';
 import { logger } from './logger';
 import { configService } from './config-service';
 import { backupService } from './backup-service';
+import { resolveUpdateProxyAgent } from './update-proxy';
 import {
   areUpdateArtifactsEqual,
   assertDownloadWithinExpectedSize,
@@ -80,6 +81,9 @@ type MandatoryUpdateStateHandler = (required: boolean) => void | Promise<void>;
 
 const getErrorMessage = (error: unknown): string =>
   error instanceof Error ? error.message : String(error);
+
+const resolveUpdateAgent = (url: string) =>
+  resolveUpdateProxyAgent(url, (target) => session.defaultSession.resolveProxy(target));
 
 /**
  * 自定义更新服务
@@ -421,7 +425,12 @@ class CustomUpdater {
       currentVersion,
     });
 
-    const data = await fetchUpdateManifest(apiUrl, `USG-NAT-Manager/${currentVersion}`);
+    const data = await fetchUpdateManifest(
+      apiUrl,
+      `USG-NAT-Manager/${currentVersion}`,
+      0,
+      resolveUpdateAgent
+    );
     const versionInfo = parseVerifiedUpdateVersionInfo(
       JSON.parse(data) as unknown,
       UPDATE_SIGNING_PUBLIC_KEY
@@ -577,13 +586,14 @@ class CustomUpdater {
   /**
    * 下载文件（支持重定向和完整的错误处理）
    */
-  private downloadFile(
+  private async downloadFile(
     url: string,
     filePath: string,
     expectedSize: number,
     redirectCount = 0
   ): Promise<void> {
     const maxRedirects = 5;
+    const agent = await resolveUpdateAgent(url);
 
     return new Promise((resolve, reject) => {
       assertSafeUpdateRedirect(url, url);
@@ -608,7 +618,7 @@ class CustomUpdater {
 
       file.once('error', fail);
 
-      request = client.get(url, (res) => {
+      request = client.get(url, { agent }, (res) => {
         response = res;
 
         // 处理重定向

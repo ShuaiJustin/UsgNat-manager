@@ -13,7 +13,7 @@ import {
   SwapOutlined,
   SyncOutlined,
 } from '@ant-design/icons';
-import { useMutation, useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 
@@ -35,6 +35,7 @@ const Dashboard: React.FC = () => {
   const { currentIP, isMonitoring, startMonitor, stopMonitor, setCurrentIP, setMonitoring } =
     useMonitorStore();
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
   const [syncModalVisible, setSyncModalVisible] = useState(false);
   const [selectedDeviceId, setSelectedDeviceId] = useState<string>();
 
@@ -190,6 +191,7 @@ const Dashboard: React.FC = () => {
     onSuccess: (data) => {
       message.success(`${t('common.success')}, ${data.length} ${t('rules.title')}`);
       setSyncModalVisible(false);
+      void queryClient.invalidateQueries({ queryKey: ['rules'] });
     },
     onError: () => {
       message.error(t('rules.syncFailed'));
@@ -246,7 +248,7 @@ const Dashboard: React.FC = () => {
           <Card>
             <Statistic
               title={t('dashboard.currentIP')}
-              value={currentIP || t('common.loading')}
+              value={currentIP || t('statusBar.unavailable')}
               prefix={<CloudOutlined />}
               valueStyle={{ fontSize: 20, color: '#1890ff' }}
             />
@@ -411,6 +413,10 @@ const Dashboard: React.FC = () => {
           }
         }}
         confirmLoading={syncRuleMutation.isPending}
+        okButtonProps={{ disabled: !selectedDeviceId }}
+        cancelButtonProps={{ disabled: syncRuleMutation.isPending }}
+        closable={!syncRuleMutation.isPending}
+        maskClosable={!syncRuleMutation.isPending}
       >
         <div style={{ marginBottom: 16 }}>
           <div style={{ marginBottom: 8 }}>{t('automation.selectDevices')}:</div>
@@ -426,7 +432,7 @@ const Dashboard: React.FC = () => {
             }))}
           />
         </div>
-        <div style={{ color: '#999', fontSize: 12 }}>{t('rules.getFromDevice')}</div>
+        <div style={{ color: '#d48806' }}>{t('rules.readOverwriteWarning')}</div>
       </Modal>
     </div>
   );

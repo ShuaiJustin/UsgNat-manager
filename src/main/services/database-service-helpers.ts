@@ -32,6 +32,7 @@ export const DATABASE_SETUP_STATEMENTS = [
       "description" TEXT,
       "noReverse" INTEGER NOT NULL DEFAULT 0,
       "unrRoute" INTEGER NOT NULL DEFAULT 0,
+      "addSyntax" TEXT,
       "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
       "updatedAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY ("deviceId") REFERENCES "devices"("id") ON DELETE CASCADE,
@@ -94,6 +95,11 @@ export const buildNatRuleMigrationStatements = (
       tableInfo.some((info) => info.name === 'unrRoute')
         ? ['UPDATE "nat_rules" SET "unrRoute" = 0 WHERE "unrRoute" IS NULL']
         : []
+    )
+    .concat(
+      tableInfo.some((info) => info.name === 'addSyntax')
+        ? []
+        : ['ALTER TABLE "nat_rules" ADD COLUMN "addSyntax" TEXT']
     );
 
-export const REQUIRED_NAT_RULE_COLUMNS = ['noReverse', 'unrRoute'];
+export const REQUIRED_NAT_RULE_COLUMNS = ['noReverse', 'unrRoute', 'addSyntax'];

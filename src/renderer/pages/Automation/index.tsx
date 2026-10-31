@@ -4,7 +4,6 @@ import { useTranslation } from 'react-i18next';
 
 import type { Device, NatRule } from '@/types';
 import {
-  hasSelectedAutomationCheckSources,
   hasSelectedAutomationDevices,
   normalizeAutomationCheckSources,
 } from '@/utils/automationConfig';
@@ -174,14 +173,6 @@ const Automation: React.FC = () => {
               .map((id) => devices.find((device) => device.id === id)?.name || id)
               .join('、')} 没有勾选任何规则，请勾选规则或取消该设备。`
           );
-      }
-
-      if (
-        ipMonitorEnabled &&
-        !hasSelectedAutomationCheckSources(ipMonitorEnabled, values.checkSources)
-      ) {
-        message.warning(t('automation.selectCheckSources'));
-        return;
       }
 
       if (

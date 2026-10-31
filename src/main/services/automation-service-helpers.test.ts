@@ -330,7 +330,7 @@ test('builds automatic batch update commands with matching device rule names', (
   const commands = buildBatchUpdateIPCommands(
     [
       {
-        ruleName: 'local-web',
+        ruleName: 'device-web',
         protocol: 'tcp',
         globalIp: '180.158.214.247',
         globalPort: '18444',
@@ -348,7 +348,7 @@ test('builds automatic batch update commands with matching device rule names', (
   assert.equal(commands[1], 'undo nat server name device-web');
   assert.equal(
     commands[2],
-    'nat server name local-web protocol tcp global 116.232.123.242 18444 inside 192.168.1.164 18444'
+    'nat server name device-web protocol tcp global 116.232.123.242 18444 inside 192.168.1.164 18444'
   );
 });
 

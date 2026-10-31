@@ -15,6 +15,44 @@ const rule = {
   enabled: true,
 };
 
+test('persisted device syntax preserves named NAT-looking identities across all writes', () => {
+  for (const name of ['NAT_1.2.3.4_80', 'NAT_1.2.3.4_80_TCP']) {
+    for (const prefix of [name, `name ${name}`]) {
+      const [live] = usgParser.parseNatServerSnapshot(
+        `nat server ${prefix} protocol tcp global 1.2.3.4 80 inside 192.168.1.2 80`,
+        true
+      );
+      const local = { ...live, id: 'saved' };
+      assert.ok(
+        usgParser
+          .generateSyncToDeviceCommands([], [local])
+          .includes(usgParser.generateNatServerCommand(live))
+      );
+      assert.deepEqual(helpers.getRuleSyncPreview('d', [live], [local]).added, []);
+      assert.deepEqual(helpers.getRuleSyncPreview('d', [live], [local]).deleted, []);
+      assert.deepEqual(usgParser.generateSyncToDeviceCommands([live], [local]), []);
+      assert.equal(helpers.compareLocalWithDevice([live], [local]).states.saved, 'synced');
+      const edited = { ...local, insidePort: '81' };
+      const commands = usgParser.generateSyncToDeviceCommands([live], [edited]);
+      assert.ok(commands.includes(`undo nat server name ${name}`));
+      assert.ok(
+        commands.includes(
+          `nat server ${prefix} protocol tcp global 1.2.3.4 80 inside 192.168.1.2 81`
+        )
+      );
+      assert.equal(helpers.equalDeviceRules([live], [local]), true);
+      const expected = helpers.getBatchIPTarget([live], [local], '5.6.7.8');
+      const changed = { ...live, globalIp: '5.6.7.8' };
+      assert.equal(helpers.equalDeviceRules([changed], expected), true);
+      assert.ok(
+        usgParser
+          .generateBatchUpdateIPCommands([local], '5.6.7.8', [live])
+          .includes(`nat server ${prefix} protocol tcp global 5.6.7.8 80 inside 192.168.1.2 80`)
+      );
+    }
+  }
+});
+
 test('completed device snapshots remove stale cached rules atomically and preserve stable ids', async () => {
   let rows = [
     { ...rule, id: 'keep', deviceId: 'd' },
@@ -72,6 +110,7 @@ test('completed device snapshots remove stale cached rules atomically and preser
   assert.equal(rows[0].id, 'keep');
   assert.equal(rows[0].globalPort, '20000-20053');
   assert.equal(rows[0].insidePort, '30000-30053');
+  assert.equal(rows[0].addSyntax, 'direct-name');
   assert.equal(
     usgParser.generateNatServerCommand(rows[0]),
     'nat server web protocol tcp global 1.2.3.4 20000 20053 inside 192.168.1.2 30000 30053 no-reverse unr-route'
@@ -215,11 +254,7 @@ test('renaming old unnamed endpoint caches preserves selected rule ids and keeps
   assert.equal(rows.find((row) => row.protocol === 'TCP')?.id, 'allowlisted-rule');
   assert.equal(rows.find((row) => row.protocol === 'UDP')?.ruleName, udp.ruleName);
   assert.equal(rows.length, 2);
-  const preview = helpers.getRuleSyncPreview(
-    'd',
-    [tcp],
-    [{ ...tcp, ruleName: 'NAT_1.2.3.4_53', addSyntax: undefined }]
-  );
+  const preview = helpers.getRuleSyncPreview('d', [tcp], [{ ...tcp, ruleName: 'NAT_1.2.3.4_53' }]);
   assert.deepEqual([preview.added, preview.deleted, preview.updated], [[], [], []]);
 });
 
@@ -397,7 +432,7 @@ test('saved rules are classified against the device the same way a push would tr
 });
 
 test('a disabled rule sharing a key with an enabled synced rule is not reported as pending', () => {
-  const live = { ...rule, ruleName: 'NAT_1.2.3.4_80_TCP' };
+  const live = { ...rule, ruleName: 'NAT_1.2.3.4_80_TCP', addSyntax: 'endpoint' as const };
   const result = helpers.compareLocalWithDevice(
     [{ ...live, addSyntax: 'endpoint' as const }],
     [
@@ -406,4 +441,10 @@ test('a disabled rule sharing a key with an enabled synced rule is not reported 
     ]
   );
   assert.deepEqual(result.states, { on: 'synced', off: 'localDisabled' });
+});
+
+test('legacy ambiguous identities fail closed until a complete device read persists their syntax', () => {
+  const local = { ...rule, ruleName: 'NAT_1.2.3.4_80', id: 'legacy' };
+  assert.throws(() => helpers.getRuleSyncPreview('d', [], [local]), /历史身份不明确/);
+  assert.throws(() => usgParser.generateSyncToDeviceCommands([], [local]), /历史身份不明确/);
 });
